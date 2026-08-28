@@ -38,9 +38,11 @@ Practical consequences:
 ```bash
 git clone <this repo> && cd killa-engine
 npm install
-cp .env.example .env    # set OWNER_NUMBERS and WORKSPACE_DIR
+npm run setup           # interactive wizard: number, workspace, persona
 npm start               # scan the QR that appears (or qr-main.png)
 ```
+
+The wizard checks your `claude` CLI, asks for your number, scaffolds a starter workspace (`CLAUDE.md`, `SOUL.md`, `USER.md`, `MEMORY.md`), and writes `.env`. Prefer doing it by hand? `cp .env.example .env` works too.
 
 Then message that number from your own phone. First reply takes a few seconds — a real agent is thinking, not a canned bot.
 

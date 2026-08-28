@@ -1,0 +1,17 @@
+{
+  "name": "killa-engine",
+  "version": "0.1.0",
+  "description": "The thinnest possible bridge between WhatsApp and a full Claude Code agent",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "dotenv": "^17.2.1",
+    "pino": "^9.9.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

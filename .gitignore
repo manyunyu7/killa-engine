@@ -1,0 +1,8 @@
+# WhatsApp session credentials — equivalent to being logged in as the account.
+sessions/
+qr-*.png
+
+# Secrets & local state
+.env
+state/
+node_modules/

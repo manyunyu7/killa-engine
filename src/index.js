@@ -108,7 +108,18 @@ function rememberSession(number, sessionId) {
 // session resets (/new, idle expiry). Values are passed to `claude --model`.
 
 const MODELS_FILE = path.join(STATE_DIR, 'chat-models.json')
-const MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku']
+
+// Aliases shown in /model help come from the claude CLI itself, so the list
+// tracks whatever this installation actually offers. Validation is claude's
+// job too: /model probes the CLI and relays its verdict.
+let MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku'] // fallback if --help parse fails
+try {
+    const help = require('child_process').execSync(`${process.env.CLAUDE_BIN || 'claude'} --help`,
+        { stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    const section = help.split('--model')[1]?.split('--')[0] || ''
+    const found = [...section.matchAll(/'([a-z][a-z0-9.-]*)'/g)].map(m => m[1])
+    if (found.length) MODEL_ALIASES = [...new Set(found)]
+} catch (e) { /* keep fallback */ }
 let chatModels = {}
 try { chatModels = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) } catch (e) { /* first run */ }
 
@@ -195,11 +206,18 @@ async function handleMessage(sock, account, msg) {
         } else if (arg === 'default') {
             setModel(sender, null)
             await sock.sendMessage(replyJid, { text: '🧠 Oke, balik ke model default.' })
-        } else if (MODEL_ALIASES.includes(arg)) {
-            setModel(sender, arg)
-            await sock.sendMessage(replyJid, { text: `🧠 Oke, pakai ${arg} mulai pesan berikutnya.` })
         } else {
-            await sock.sendMessage(replyJid, { text: `❓ Model tidak dikenal. Pilihan: ${MODEL_ALIASES.join(', ')}, default` })
+            // Any name is allowed (aliases or full model ids) — claude is the
+            // validator. Probe it; on rejection, relay claude's own message.
+            const { probeModel } = require('./agent')
+            await sock.sendMessage(replyJid, { text: `⏳ Ngecek ${arg} ke Claude...` })
+            const probe = await probeModel(arg, WORKSPACE_DIR)
+            if (probe.ok) {
+                setModel(sender, arg)
+                await sock.sendMessage(replyJid, { text: `🧠 Oke, pakai ${arg} mulai pesan berikutnya.` })
+            } else {
+                await sock.sendMessage(replyJid, { text: `❌ ${probe.message || 'model ditolak claude'}` })
+            }
         }
         return
     }

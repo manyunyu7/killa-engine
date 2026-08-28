@@ -88,4 +88,26 @@ function runAgent({ text, sessionId, workspace, timeoutMs, model }) {
     })
 }
 
-module.exports = { runAgent }
+/**
+ * Cheap validity check for a model name: a bogus model fails in ~2s at zero
+ * cost with claude's own explanation, which we relay verbatim.
+ */
+function probeModel(model, workspace) {
+    return new Promise((resolve) => {
+        const child = spawn(CLAUDE_BIN, ['-p', 'ok', '--model', model, '--output-format', 'json'],
+            { cwd: workspace, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
+        let out = ''
+        const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ ok: false, message: 'probe timeout' }) }, 60000)
+        child.stdout.on('data', c => { out += c })
+        child.on('error', e => { clearTimeout(timer); resolve({ ok: false, message: e.message }) })
+        child.on('close', () => {
+            clearTimeout(timer)
+            try {
+                const parsed = JSON.parse(out)
+                resolve({ ok: !parsed.is_error, message: (parsed.result || '').trim() })
+            } catch (e) { resolve({ ok: false, message: 'probe gagal dibaca' }) }
+        })
+    })
+}
+
+module.exports = { runAgent, probeModel }

@@ -27,6 +27,7 @@ const {
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
     DisconnectReason,
+    downloadMediaMessage,
 } = require('baileys')
 const { runAgent } = require('./agent')
 
@@ -174,12 +175,65 @@ async function resolveSender(sock, account, key) {
     return null
 }
 
+// ── Media ───────────────────────────────────────────────────────────────
+
+const MEDIA_DIR = path.join(STATE_DIR, 'media')
+fs.mkdirSync(MEDIA_DIR, { recursive: true })
+
+/** Download an incoming image to disk; returns the path or null. */
+async function saveIncomingImage(msg, account) {
+    if (!msg.message?.imageMessage) return null
+    try {
+        const buf = await downloadMediaMessage(msg, 'buffer', {})
+        const ext = (msg.message.imageMessage.mimetype || 'image/jpeg').split('/')[1].split(';')[0]
+        const file = path.join(MEDIA_DIR, `in-${Date.now()}.${ext}`)
+        fs.writeFileSync(file, buf)
+        return file
+    } catch (e) {
+        console.error(`[${account}] gagal download gambar:`, e.message)
+        return null
+    }
+}
+
+/**
+ * Outbound images use a marker convention: any [[send:/abs/path]] in the
+ * agent's reply is stripped from the text and sent as an image message.
+ * The workspace CLAUDE.md should mention this convention to the agent.
+ */
+const SEND_MARKER = /\[\[send:([^\]]+)\]\]/g
+
+async function deliverReply(sock, replyJid, reply) {
+    const images = []
+    const text = reply.replace(SEND_MARKER, (_, p) => {
+        const file = p.trim()
+        if (fs.existsSync(file)) images.push(file)
+        return ''
+    }).replace(/\n{3,}/g, '\n\n').trim()
+
+    const chunks = text ? (text.match(/[\s\S]{1,3500}/g) || []) : []
+    for (const chunk of chunks) {
+        await sock.sendMessage(replyJid, { text: chunk })
+    }
+    for (const file of images) {
+        try {
+            await sock.sendMessage(replyJid, { image: fs.readFileSync(file) })
+        } catch (e) {
+            console.error('gagal kirim gambar:', e.message)
+            await sock.sendMessage(replyJid, { text: `⚠️ Gagal mengirim gambar ${path.basename(file)}` })
+        }
+    }
+    if (!chunks.length && !images.length) {
+        await sock.sendMessage(replyJid, { text: '(kosong)' })
+    }
+}
+
 async function handleMessage(sock, account, msg) {
     const jid = msg.key.remoteJid || ''
     if (jid.endsWith('@g.us')) return // groups: not yet
 
     const text = extractText(msg)
-    if (!text) return
+    const hasImage = !!msg.message?.imageMessage
+    if (!text && !hasImage) return
 
     const sender = await resolveSender(sock, account, msg.key)
     if (!sender) return
@@ -223,11 +277,19 @@ async function handleMessage(sock, account, msg) {
     }
 
     enqueue(sender, async () => {
-        log(account, `agent <- ${sender}: ${text.slice(0, 80)}`)
+        log(account, `agent <- ${sender}: ${hasImage ? '[gambar] ' : ''}${text.slice(0, 80)}`)
         try { await sock.sendPresenceUpdate('composing', replyJid) } catch (e) { /* cosmetic */ }
 
+        let prompt = text
+        if (hasImage) {
+            const file = await saveIncomingImage(msg, account)
+            prompt = file
+                ? `${text || '(tanpa caption)'}\n\n[User mengirim sebuah gambar. File-nya ada di ${file} — baca file itu untuk melihat isinya.]`
+                : `${text || ''}\n\n[User mengirim gambar tapi gagal diunduh — beri tahu user.]`
+        }
+
         const { reply, sessionId } = await runAgent({
-            text,
+            text: prompt,
             sessionId: sessionFor(sender),
             workspace: WORKSPACE_DIR,
             timeoutMs: AGENT_TIMEOUT_MS,
@@ -237,11 +299,7 @@ async function handleMessage(sock, account, msg) {
 
         try { await sock.sendPresenceUpdate('paused', replyJid) } catch (e) { /* cosmetic */ }
 
-        // WhatsApp caps messages around 64k; stay well under it.
-        const chunks = reply.match(/[\s\S]{1,3500}/g) || ['(kosong)']
-        for (const chunk of chunks) {
-            await sock.sendMessage(replyJid, { text: chunk })
-        }
+        await deliverReply(sock, replyJid, reply)
         log(account, `agent -> ${sender}: ${reply.length} char`)
     })
 }

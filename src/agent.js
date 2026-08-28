@@ -21,11 +21,13 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude'
  * @param {string|null} opts.sessionId  resume this session, or null for fresh
  * @param {string} opts.workspace  cwd for the run (the agent's world)
  * @param {number} opts.timeoutMs
+ * @param {string} [opts.model]    model alias/id to pass via --model
  * @returns {Promise<{reply: string, sessionId: string|null}>}
  */
-function runAgent({ text, sessionId, workspace, timeoutMs }) {
+function runAgent({ text, sessionId, workspace, timeoutMs, model }) {
     return new Promise((resolve) => {
         const args = ['-p', text, '--output-format', 'json']
+        if (model) args.push('--model', model)
 
         // Headless run: nobody is there to approve tool calls. The workspace
         // is the blast radius — point WORKSPACE_DIR somewhere you trust the

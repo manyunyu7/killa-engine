@@ -102,6 +102,23 @@ function rememberSession(number, sessionId) {
     saveSessions()
 }
 
+// ── Per-chat model choice ───────────────────────────────────────────────
+//
+// Separate from chatSessions on purpose: a model choice should survive
+// session resets (/new, idle expiry). Values are passed to `claude --model`.
+
+const MODELS_FILE = path.join(STATE_DIR, 'chat-models.json')
+const MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku']
+let chatModels = {}
+try { chatModels = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) } catch (e) { /* first run */ }
+
+function setModel(number, model) {
+    if (model) chatModels[number] = model
+    else delete chatModels[number]
+    try { fs.writeFileSync(MODELS_FILE, JSON.stringify(chatModels, null, 2)) }
+    catch (e) { console.error('gagal simpan models:', e.message) }
+}
+
 // ── Per-chat queue ──────────────────────────────────────────────────────
 
 const queues = new Map() // number -> Promise chain
@@ -169,6 +186,24 @@ async function handleMessage(sock, account, msg) {
         return
     }
 
+    if (text.trim().startsWith('/model')) {
+        const arg = text.trim().split(/\s+/)[1]?.toLowerCase()
+        if (!arg) {
+            await sock.sendMessage(replyJid, {
+                text: `🧠 Model sekarang: ${chatModels[sender] || 'default'}\nGanti: /model ${MODEL_ALIASES.join(' | ')}\nBalik ke default: /model default`,
+            })
+        } else if (arg === 'default') {
+            setModel(sender, null)
+            await sock.sendMessage(replyJid, { text: '🧠 Oke, balik ke model default.' })
+        } else if (MODEL_ALIASES.includes(arg)) {
+            setModel(sender, arg)
+            await sock.sendMessage(replyJid, { text: `🧠 Oke, pakai ${arg} mulai pesan berikutnya.` })
+        } else {
+            await sock.sendMessage(replyJid, { text: `❓ Model tidak dikenal. Pilihan: ${MODEL_ALIASES.join(', ')}, default` })
+        }
+        return
+    }
+
     enqueue(sender, async () => {
         log(account, `agent <- ${sender}: ${text.slice(0, 80)}`)
         try { await sock.sendPresenceUpdate('composing', replyJid) } catch (e) { /* cosmetic */ }
@@ -178,6 +213,7 @@ async function handleMessage(sock, account, msg) {
             sessionId: sessionFor(sender),
             workspace: WORKSPACE_DIR,
             timeoutMs: AGENT_TIMEOUT_MS,
+            model: chatModels[sender],
         })
         rememberSession(sender, sessionId)
 

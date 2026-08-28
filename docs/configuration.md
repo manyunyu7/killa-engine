@@ -36,3 +36,6 @@ All configuration is environment variables, read from `.env` in the repo root. `
 | Command | Effect |
 |---|---|
 | `/new` | Forget the current conversation and start a fresh Claude session. |
+| `/model` | Show the active model for this chat. |
+| `/model fable\|opus\|sonnet\|haiku` | Switch model for this chat (sticks across session resets). |
+| `/model default` | Back to the CLI default. |

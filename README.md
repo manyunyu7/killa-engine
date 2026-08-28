@@ -65,6 +65,15 @@ pm2 save
 
 For headless servers, authenticate the `claude` CLI with a long-lived token created on a machine with a browser (`claude setup-token`).
 
+## Documentation
+
+- [Getting started](docs/getting-started.md) — zero to chatting in ~10 minutes
+- [The workspace](docs/workspace.md) — personality, memory, migrating from OpenClaw
+- [Architecture](docs/architecture.md) — how the two source files work
+- [Configuration](docs/configuration.md) — every env var and in-chat command
+- [Deploying to a VPS](docs/deploy-vps.md) — pm2, headless Claude auth, 24/7
+- [Security model](docs/security.md) — read before deploying, honestly stated
+
 ## Roadmap
 
 - [ ] Pairing gate for unknown senders (approval codes instead of a static whitelist)

@@ -1,46 +1,57 @@
 /**
- * setup.js — interactive onboarding wizard.
+ * Interactive onboarding wizard.
  *
  * `npm run setup` walks a new user from zero to a working .env and a
  * scaffolded workspace, checking the claude CLI along the way. Safe to
- * re-run: existing .env and workspace files are never overwritten.
+ * re-run: an existing .env and existing workspace files are never overwritten.
+ *
+ * `npm run setup -- --workspace <path>` only scaffolds an extra workspace and
+ * never touches .env — for a second persona, or a second instance.
  */
 
-const fs = require('fs')
-const os = require('os')
-const path = require('path')
-const readline = require('readline')
-const { execSync } = require('child_process')
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import readline from 'node:readline'
+import { execSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { DEFAULT_WORKSPACES_DIR, isWorkspaceName } from '../config.ts'
+import { expandHome, scaffoldWorkspace, workspaceFlag, type Persona } from './workspace.ts'
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const ENV_PATH = path.join(ROOT, '.env')
 
-// Own line queue instead of rl.question(): readline discards lines that
-// arrive while no question is pending, which breaks piped/scripted input
-// (printf 'a\nb\n' | npm run setup).
+// Own line queue instead of rl.question(): readline discards lines that arrive
+// while no question is pending, which breaks piped input (printf | npm run setup).
 const rl = readline.createInterface({ input: process.stdin })
-const lineQueue = []
-let waiter = null
+const lineQueue: string[] = []
+let waiter: ((line: string) => void) | null = null
 let stdinClosed = false
-rl.on('line', l => { if (waiter) { const w = waiter; waiter = null; w(l) } else lineQueue.push(l) })
-rl.on('close', () => { stdinClosed = true; if (waiter) { const w = waiter; waiter = null; w('') } })
 
-const ask = (q, def) => {
+rl.on('line', (l: string) => {
+    if (waiter) { const w = waiter; waiter = null; w(l) } else lineQueue.push(l)
+})
+rl.on('close', () => {
+    stdinClosed = true
+    if (waiter) { const w = waiter; waiter = null; w('') }
+})
+
+function ask(q: string, def = ''): Promise<string> {
     process.stdout.write(def ? `${q} [${def}] ` : `${q} `)
-    return new Promise(resolve => {
-        const give = a => resolve((a || def || '').trim())
-        if (lineQueue.length) give(lineQueue.shift())
+    return new Promise<string>(resolve => {
+        const give = (a: string) => resolve((a || def).trim())
+        if (lineQueue.length) give(lineQueue.shift()!)
         else if (stdinClosed) give('')
         else waiter = give
     })
 }
 
-function checkClaude() {
+function checkClaude(): boolean {
     try {
         const v = execSync('claude --version', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
         console.log(`✅ Claude Code found: ${v}`)
         return true
-    } catch (e) {
+    } catch {
         console.log(`
 ❌ Claude Code CLI not found on PATH.
 
@@ -53,70 +64,49 @@ function checkClaude() {
     }
 }
 
-function workspaceTemplate({ agentName, ownerName, language }) {
-    return {
-        'CLAUDE.md': `# ${agentName} — Standing Instructions
+const askPersona = async (): Promise<Persona> => ({
+    agentName: await ask('Agent name:', 'Killa'),
+    ownerName: await ask('What should the agent call you?', 'Boss'),
+    language: await ask('Reply language:', 'the same language the user writes in'),
+})
 
-You are ${agentName}, ${ownerName}'s personal agent, talking over WhatsApp.
-
-## Before every reply
-- Read \`SOUL.md\` (who you are), \`USER.md\` (who you talk to), \`MEMORY.md\` (what you both know).
-
-## WhatsApp style — IMPORTANT
-- Reply in ${language}.
-- Chat like a person texting: short, natural, warm.
-- NO markdown: no **bold**, no bullet lists, no headers. Plain sentences only.
-- One thought per message-length reply; don't write essays unless asked.
-
-## Memory
-- When you learn something worth keeping (facts about ${ownerName}, decisions,
-  things to follow up), append it to \`MEMORY.md\` yourself with a date.
-- Facts about ${ownerName} as a person go to \`USER.md\`.
-
-## Images
-- When the user sends an image, the message tells you its file path — read
-  that file to see it.
-- To send an image back, put \`[[send:/absolute/path.png]]\` on its own in
-  your reply; the engine sends that file as an image and strips the marker.
-
-## Boundaries
-- This workspace is your entire world. Do not touch files outside it
-  unless ${ownerName} explicitly asks.
-`,
-        'SOUL.md': `# SOUL.md — Who ${agentName} is
-
-_Describe your agent's personality here: tone, quirks, how it talks,
-what it cares about. This file IS the personality — edit freely._
-
-${agentName} is helpful, direct, and has a sense of humor.
-`,
-        'USER.md': `# USER.md — About ${ownerName}
-
-_Facts about the owner. The agent reads this before every reply and
-appends new facts as it learns them._
-
-- Name: ${ownerName}
-`,
-        'MEMORY.md': `# MEMORY.md — Shared memory
-
-_The agent appends dated notes here. Prune it yourself when it gets long._
-`,
+async function scaffoldOnly(raw: string | null): Promise<void> {
+    if (!raw) {
+        console.error('❌ --workspace needs a path, e.g. npm run setup -- --workspace ~/killa-kerja')
+        process.exit(1)
     }
+    // A bare name goes in the managed root; a path is honoured as given.
+    const workspace = isWorkspaceName(raw)
+        ? path.join(os.homedir(), DEFAULT_WORKSPACES_DIR, raw)
+        : path.resolve(expandHome(raw, os.homedir()))
+    console.log(`\n🧱 scaffolding workspace: ${workspace}\n`)
+
+    scaffoldWorkspace(workspace, await askPersona())
+
+    console.log(`\n✅ Workspace ready: ${workspace}`)
+    console.log(`   → Personality lives in ${path.join(workspace, 'SOUL.md')} — make it yours.`)
+    console.log(`\nUse it as the main workspace:  WORKSPACE=${path.basename(workspace)}`)
+    console.log(`Or for one account only:       WORKSPACE_<ACCOUNT>=${path.basename(workspace)}`)
+    console.log('Then restart the engine.\n')
+    rl.close()
 }
 
-async function main() {
+async function main(): Promise<void> {
+    const flag = workspaceFlag(process.argv.slice(2))
+    if (flag !== null) return scaffoldOnly(flag)
+
     console.log('\n🦞 killa-engine setup\n─────────────────────\n')
 
     const hasClaude = checkClaude()
 
     if (fs.existsSync(ENV_PATH)) {
         console.log('\nℹ️  .env already exists — this wizard will NOT overwrite it.')
-        console.log('   Edit it by hand, or delete it and re-run setup.\n')
+        console.log('   Edit it by hand, or delete it and re-run setup.')
+        console.log('   Extra workspace: npm run setup -- --workspace <path>\n')
         rl.close()
         return
     }
 
-    // 1. Owner number(s)
     let owner = ''
     while (!/^\d{8,15}(,\d{8,15})*$/.test(owner)) {
         owner = (await ask('Your WhatsApp number (digits only, with country code, e.g. 6281234567890):'))
@@ -127,43 +117,28 @@ async function main() {
         }
     }
 
-    // 2. Workspace
-    const wsDefault = path.join(os.homedir(), 'killa-workspace')
-    const workspace = path.resolve(await ask('Workspace folder (the agent\'s world):', wsDefault))
+    const name = await ask("Workspace name (the agent's world):", 'main')
+    const workspace = isWorkspaceName(name)
+        ? path.join(os.homedir(), DEFAULT_WORKSPACES_DIR, name)
+        : path.resolve(expandHome(name, os.homedir()))
+    const timezone = await ask('Your timezone (IANA name, matters for reminders):',
+        Intl.DateTimeFormat().resolvedOptions().timeZone)
 
-    // 3. Persona
-    const agentName = await ask('Agent name:', 'Killa')
-    const ownerName = await ask('What should the agent call you?', 'Boss')
-    const language = await ask('Reply language:', 'the same language the user writes in')
+    scaffoldWorkspace(workspace, await askPersona())
 
-    // Scaffold workspace (never overwrite)
-    fs.mkdirSync(workspace, { recursive: true })
-    const files = workspaceTemplate({ agentName, ownerName, language })
-    for (const [name, content] of Object.entries(files)) {
-        const p = path.join(workspace, name)
-        if (fs.existsSync(p)) {
-            console.log(`   ⏭️  ${name} exists, keeping yours`)
-        } else {
-            fs.writeFileSync(p, content)
-            console.log(`   📄 ${name} created`)
-        }
-    }
-
-    // Write .env
     fs.writeFileSync(ENV_PATH, `ACCOUNTS=main
 OWNER_NUMBERS=${owner}
-WORKSPACE_DIR=${workspace}
+WORKSPACE=${path.basename(workspace)}
+TIMEZONE=${timezone}
 `)
-    console.log(`\n✅ .env written`)
+    console.log('\n✅ .env written')
     console.log(`✅ Workspace ready: ${workspace}`)
     console.log(`   → Personality lives in ${path.join(workspace, 'SOUL.md')} — make it yours.`)
 
-    if (!hasClaude) {
-        console.log('\n⚠️  Install & log in to Claude Code before starting (see above).')
-    }
-    console.log(`\nNext:  npm start   — then scan the QR with the agent's WhatsApp number.`)
-    console.log(`       (use a spare number, not your daily one)\n`)
+    if (!hasClaude) console.log('\n⚠️  Install & log in to Claude Code before starting (see above).')
+    console.log('\nNext:  npm start   — then scan the QR with the agent\'s WhatsApp number.')
+    console.log('       (use a spare number, not your daily one)\n')
     rl.close()
 }
 
-main()
+void main()

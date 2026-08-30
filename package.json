@@ -2,10 +2,18 @@
   "name": "killa-engine",
   "version": "0.1.0",
   "description": "The thinnest possible bridge between WhatsApp and a full Claude Code agent",
-  "main": "src/index.js",
+  "main": "src/main.ts",
   "scripts": {
-    "start": "node src/index.js",
-    "setup": "node src/setup.js"
+    "start": "node src/main.ts",
+    "setup": "node src/cli/setup.ts",
+    "relink": "node src/cli/manage.ts relink",
+    "owner": "node src/cli/manage.ts owner",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run coverage",
+    "workspace": "node src/cli/workspaces.ts"
   },
   "license": "MIT",
   "dependencies": {
@@ -14,5 +22,17 @@
     "pino": "^9.9.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@vitest/coverage-v8": "^3.2.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.0"
   }
 }

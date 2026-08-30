@@ -1,14 +1,37 @@
 # Architecture
 
-Two source files, one bet: **don't build an agent runtime — borrow Claude Code's.**
+One bet: **don't build an agent runtime — borrow Claude Code's.**
 
 ```
 ┌─────────┐   Baileys    ┌──────────────────────┐   spawn    ┌─────────────────┐
-│WhatsApp │◄────────────►│  src/index.js        │───────────►│ claude -p       │
+│WhatsApp │◄────────────►│  killa-engine        │───────────►│ claude -p       │
 │ (owner) │              │  gateway + queue     │            │ --resume <id>   │
 └─────────┘              │  + session registry  │◄───────────│ cwd = workspace │
                          └──────────────────────┘  json out  └─────────────────┘
 ```
+
+## Layout
+
+TypeScript, run directly by Node 22.18+ — no build step, no `dist/`, the file you read is the file that runs.
+
+```
+src/
+├── main.ts            wiring only: config → stores → ports → socket
+├── config.ts          env → typed Config (pure)
+├── types.ts           shared domain types
+├── core/              no I/O, no clock of its own — where the tests live
+│   ├── dispatch.ts    slash commands + the agent turn
+│   ├── markers.ts     [[send:]] / [[remind:]] parsing
+│   ├── schedule.ts    reminder specs → fire times
+│   ├── queue.ts       per-chat serialization
+│   └── ports.ts       the interfaces the outside world enters through
+├── store/             JSON persistence (sessions, models, reminders)
+├── agent/             the claude CLI bridge (spawn injected)
+├── whatsapp/          Baileys: connection lifecycle + inbound parsing
+└── cli/               setup wizard, relink/owner, workspace template
+```
+
+The rule that keeps it testable: **decisions live in `core/`, effects live at the edges.** `dispatch.ts` never imports `fs`, `baileys` or `child_process` — it takes a `Chat` (send text, send image, set presence) and `Deps` (stores, agent, clock, logger) and returns. That is why the whole message flow can be exercised with fakes, and why `main.ts` and `connection.ts` are the only files with nothing to test: they contain no decisions.
 
 Where OpenClaw and Hermes reimplement sessions, tool loops, memory, and skills on top of a raw model API, killa-engine delegates all of it to the `claude` CLI. The engine's whole job is: get text out of WhatsApp reliably, keep replies in order, and remember which Claude session belongs to which chat.
 
@@ -17,8 +40,8 @@ Where OpenClaw and Hermes reimplement sessions, tool loops, memory, and skills o
 1. **`messages.upsert`** fires. Drop: own messages, groups, non-text, non-`notify` types.
 2. **Sender resolution.** WhatsApp increasingly hides real numbers behind LIDs (`…@lid`). Baileys 7's `remoteJidAlt`/`participantAlt` gives the real number; `getPNForLID()` is the fallback. Unresolvable senders are dropped — identity is the security boundary, so no identity means no processing.
 3. **Owner check.** Not in `OWNER_NUMBERS` → logged and ignored. No reply, no error — an unknown sender learns nothing, not even that the bot exists.
-4. **Queue.** Jobs chain on a per-chat promise (`queues` map). One agent run at a time per chat, so replies can't interleave or arrive out of order. Different chats run concurrently.
-5. **Agent run** (`src/agent.js`). Spawns `claude -p <text> --output-format json`, cwd = workspace, `--resume <sessionId>` if the chat has a live session. The JSON result carries the reply and a `session_id` for next time.
+4. **Queue.** Jobs chain on a per-chat promise (`core/queue.ts`). One agent run at a time per chat, so replies can't interleave or arrive out of order. Different chats run concurrently.
+5. **Agent run** (`src/agent/claude.ts`). Spawns `claude -p <text> --output-format json`, cwd = workspace, `--resume <sessionId>` if the chat has a live session. The JSON result carries the reply and a `session_id` for next time.
 6. **Reply** goes out on the same socket, chunked at 3500 chars, with a typing indicator during the run.
 
 ## Session registry

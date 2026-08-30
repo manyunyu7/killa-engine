@@ -18,7 +18,7 @@ Practical consequences:
 
 - **No API bill.** Runs on your existing Claude subscription via the `claude` CLI.
 - **The workspace is the personality.** Point `WORKSPACE_DIR` at a folder; its `CLAUDE.md` becomes the agent's standing instructions, its markdown files its memory. An OpenClaw-style workspace (SOUL.md, MEMORY.md, …) drops in unchanged.
-- **Tiny surface to audit.** Two source files. The WhatsApp layer is forked from a production OTP listener that survived real-world LID migration, 515 reconnect storms, and multi-account operation.
+- **Tiny surface to audit.** A few hundred lines of TypeScript, with the decision-making core covered by 172 tests. The WhatsApp layer is forked from a production OTP listener that survived real-world LID migration, 515 reconnect storms, and multi-account operation.
 
 ## Design principles
 
@@ -29,7 +29,7 @@ Practical consequences:
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.18+ (the source is TypeScript, run directly — no build step)
 - [Claude Code](https://claude.com/claude-code) installed and logged in (`claude` on PATH)
 - A WhatsApp number you control (a spare number is strongly recommended)
 
@@ -39,6 +39,7 @@ Practical consequences:
 git clone <this repo> && cd killa-engine
 npm install
 npm run setup           # interactive wizard: number, workspace, persona
+                        # (extra workspace later: npm run setup -- --workspace <path>)
 npm start               # scan the QR that appears (or qr-main.png)
 ```
 
@@ -59,7 +60,7 @@ WhatsApp session credentials (`sessions/`) are equivalent to being logged in as 
 ## Deploy (VPS, pm2)
 
 ```bash
-pm2 start src/index.js --name killa-engine --time
+pm2 start src/main.ts --name killa-engine --time
 pm2 save
 ```
 
@@ -69,15 +70,17 @@ For headless servers, authenticate the `claude` CLI with a long-lived token crea
 
 - [Getting started](docs/getting-started.md) — zero to chatting in ~10 minutes
 - [The workspace](docs/workspace.md) — personality, memory, migrating from OpenClaw
-- [Architecture](docs/architecture.md) — how the two source files work
+- [Architecture](docs/architecture.md) — layout, message lifecycle, why the core has no I/O
 - [Configuration](docs/configuration.md) — every env var and in-chat command
 - [Deploying to a VPS](docs/deploy-vps.md) — pm2, headless Claude auth, 24/7
 - [Security model](docs/security.md) — read before deploying, honestly stated
+- [Testing](docs/testing.md) — what's covered, and how the fakes work
 
 ## Roadmap
 
 - [ ] Pairing gate for unknown senders (approval codes instead of a static whitelist)
-- [ ] Media in/out (images, voice notes)
+- [x] Media in/out (images) — voice notes still open
+- [x] Scheduled reminders (owner-only, capped, see docs/configuration.md)
 - [ ] Scheduled/proactive runs (cron → agent; outbound via a non-WhatsApp channel to respect reply-only)
 - [ ] Group chat support with explicit mention gating
 - [ ] Telegram as a second surface

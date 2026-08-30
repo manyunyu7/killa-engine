@@ -6,7 +6,7 @@ From zero to chatting with your agent in ~10 minutes.
 
 | Thing | Why |
 |---|---|
-| Node.js 22+ | Baileys 7 requires it |
+| Node.js 22.18+ | Baileys 7 requires it; 22.18+ runs the TypeScript source without a build step |
 | [Claude Code](https://claude.com/claude-code) CLI, logged in | The agent brain. Uses your existing Claude subscription — no separate API key or bill |
 | A **spare** WhatsApp number | The agent's identity. Don't use your daily number: you can't chat with yourself, and if WhatsApp ever bans the number you don't want it to be yours |
 | A phone with that number | Only to scan the QR once |
@@ -56,6 +56,7 @@ Things to try:
 - `what's in your workspace?` — it can read its own files
 - `remember that my sister's birthday is June 3` — watch `MEMORY.md` change
 - `/new` — reset the conversation (sessions also auto-reset after 30 idle minutes)
+- `/reminders`, `/cancel <id>` — see and cancel scheduled reminders (just ask in plain language to create one: "ingetin aku jam 7 minum obat")
 
 ## Troubleshooting
 

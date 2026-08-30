@@ -6,3 +6,5 @@ qr-*.png
 .env
 state/
 node_modules/
+coverage/
+.DS_Store

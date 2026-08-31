@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { BROKEN_SESSION_REPLY, createClaude, EMPTY_REPLY, TIMEOUT_REPLY } from '../src/agent/claude.ts'
+import { BROKEN_SESSION_REPLY, createClaude, EMPTY_REPLY, SUDO_BRIDGE, TIMEOUT_REPLY } from '../src/agent/claude.ts'
 import { discoverAliases, FALLBACK_ALIASES, parseAliases } from '../src/agent/aliases.ts'
 
 /** A child process stand-in: no CLI, no processes, full control of timing. */
@@ -24,6 +24,33 @@ function harness() {
 const run = { text: 'halo', sessionId: null, workspace: '/ws', timeoutMs: 1000 }
 
 describe('runAgent', () => {
+    it('hands a runAs run to the sudo bridge, and sets no cwd', async () => {
+        // The bridge chdirs itself: this process may not be able to enter the
+        // other user's home at all, so a cwd here would fail before exec.
+        const { child, spawn, claude } = harness()
+        const p = claude.runAgent({ ...run, workspace: '/home/other/ws', runAs: 'killa-rw' })
+
+        child.stdout.emit('data', JSON.stringify({ result: 'hai', session_id: 's' }))
+        child.emit('close', 0)
+        await p
+
+        const [bin, args, opts] = spawn.mock.calls[0]!
+        expect(bin).toBe('sudo')
+        expect(args.slice(0, 5)).toEqual(['-n', '-u', 'killa-rw', SUDO_BRIDGE, '/home/other/ws'])
+        expect(args).toContain('--dangerously-skip-permissions')
+        expect((opts as { cwd?: string }).cwd).toBeUndefined()
+    })
+
+    it('spawns claude directly when there is no runAs', async () => {
+        const { child, spawn, claude } = harness()
+        const p = claude.runAgent({ ...run })
+        child.stdout.emit('data', JSON.stringify({ result: 'hai', session_id: 's' }))
+        child.emit('close', 0)
+        await p
+        expect(spawn.mock.calls[0]![0]).toBe('claude')
+        expect(spawn.mock.calls[0]![2].cwd).toBe('/ws')
+    })
+
     it('builds the CLI arguments the engine depends on', async () => {
         const { child, spawn, claude } = harness()
         const p = claude.runAgent({ ...run, sessionId: 'sess-1', model: 'opus' })

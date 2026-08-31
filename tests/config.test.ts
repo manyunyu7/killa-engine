@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { forAccountConfig, isWorkspaceName, parseConfig, resolveWorkspace } from '../src/config.ts'
+import { forAccountConfig, isWorkspaceName, parseConfig, resolveWorkspace, routeForChat } from '../src/config.ts'
 
 const base = { WORKSPACE_DIR: '/ws', OWNER_NUMBERS: '628111' }
 
@@ -179,5 +179,61 @@ describe('isWorkspaceName', () => {
         // onto the root — no traversal out of the managed directory.
         expect(resolveWorkspace('..', '/root/ws', '/home/k')).not.toContain('/root/ws')
         expect(resolveWorkspace('', '/root/ws', '/home/k')).toBe('')
+    })
+})
+
+describe('group routes', () => {
+    const home = '/home/killa'
+    const base = { WORKSPACE_DIR: '/ws', OWNER_NUMBERS: '628111' }
+
+    const withGroup = (over: Record<string, string> = {}) => parseConfig({
+        ...base,
+        GROUPS: 'railway',
+        GROUP_JID_RAILWAY: '12345@g.us',
+        GROUP_TRIGGER_RAILWAY: 'Meii',
+        GROUP_WORKSPACE_RAILWAY: '/home/killa-rw/.killa/workspaces/railway',
+        GROUP_RUNAS_RAILWAY: 'killa-rw',
+        ...over,
+    }, '/root', () => true, home)
+
+    it('reads a route and lower-cases the trigger once', () => {
+        const { config, errors } = withGroup()
+        expect(errors).toEqual([])
+        const r = routeForChat(config, '12345@g.us')
+        expect(r?.name).toBe('railway')
+        expect(r?.trigger).toBe('meii')
+        expect(r?.runAs).toBe('killa-rw')
+        expect(r?.workspaceDir).toBe('/home/killa-rw/.killa/workspaces/railway')
+    })
+
+    it('does not route a group it was never told about', () => {
+        const { config } = withGroup()
+        expect(routeForChat(config, '99999@g.us')).toBeNull()
+    })
+
+    it('refuses a route with no trigger — that would answer every message', () => {
+        const { errors } = withGroup({ GROUP_TRIGGER_RAILWAY: '' })
+        expect(errors.some(e => e.includes('GROUP_TRIGGER_RAILWAY'))).toBe(true)
+    })
+
+    it('refuses a jid that is not a group', () => {
+        const { errors } = withGroup({ GROUP_JID_RAILWAY: '628111@s.whatsapp.net' })
+        expect(errors.some(e => e.includes('@g.us'))).toBe(true)
+    })
+
+    it('does not stat a runAs workspace — it lives in another user home', () => {
+        // exists() says no; a runAs route must still be accepted, because this
+        // process genuinely cannot see into the other user's home.
+        const { errors } = parseConfig({
+            ...base, GROUPS: 'railway', GROUP_JID_RAILWAY: '12345@g.us',
+            GROUP_TRIGGER_RAILWAY: 'meii', GROUP_RUNAS_RAILWAY: 'killa-rw',
+            GROUP_WORKSPACE_RAILWAY: '/home/killa-rw/.killa/workspaces/railway',
+        }, '/root', p => p === '/ws', home)
+        expect(errors).toEqual([])
+    })
+
+    it('still checks a workspace it can see', () => {
+        const { errors } = withGroup({ GROUP_RUNAS_RAILWAY: '' })
+        expect(errors.some(e => e.includes('tidak ditemukan'))).toBe(false)
     })
 })

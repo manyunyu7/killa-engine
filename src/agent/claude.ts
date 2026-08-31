@@ -10,6 +10,9 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process'
+
+/** Fixed path: the sudoers rule names this exact binary. */
+export const SUDO_BRIDGE = '/usr/local/bin/killa-claude'
 import type { AgentResult, AgentRun, ProbeResult } from '../types.ts'
 
 export type Spawn = typeof nodeSpawn
@@ -26,7 +29,7 @@ export const BROKEN_SESSION_REPLY = '⚠️ Sesi agent bermasalah — pesan beri
 export function createClaude({ bin = process.env.CLAUDE_BIN || 'claude',
                                spawn = nodeSpawn }: ClaudeOptions = {}) {
 
-    function runAgent({ text, sessionId, workspace, timeoutMs, model }: AgentRun): Promise<AgentResult> {
+    function runAgent({ text, sessionId, workspace, timeoutMs, model, runAs, extraEnv }: AgentRun): Promise<AgentResult> {
         return new Promise(resolve => {
             const args = ['-p', text, '--output-format', 'json']
             if (model) args.push('--model', model)
@@ -35,7 +38,18 @@ export function createClaude({ bin = process.env.CLAUDE_BIN || 'claude',
             args.push('--dangerously-skip-permissions')
             if (sessionId) args.push('--resume', sessionId)
 
-            const child = spawn(bin, args, { cwd: workspace, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
+            // `runAs` hands the run to another OS user through a fixed sudo
+            // bridge. The bridge does the chdir itself: this process may not
+            // even be able to enter that user's home, so setting cwd here
+            // would fail before exec.
+            const extra = extraEnv ?? {}
+            const names = Object.keys(extra)
+            const child = runAs
+                ? spawn('sudo', ['-n', '-u', runAs,
+                                 ...(names.length ? [`--preserve-env=${names.join(',')}`] : []),
+                                 SUDO_BRIDGE, workspace, ...args],
+                        { env: { ...process.env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] })
+                : spawn(bin, args, { cwd: workspace, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
 
             let out = ''
             let err = ''

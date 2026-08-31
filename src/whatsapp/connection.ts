@@ -20,7 +20,7 @@ import {
     type WASocket,
 } from 'baileys'
 
-import { forAccountConfig } from '../config.ts'
+import { forAccountConfig, routeForChat } from '../config.ts'
 import type { Config, Logger } from '../types.ts'
 import { extractText, isGroup, resolveSender, saveIncomingImage } from './inbound.ts'
 import type { Chat } from '../core/ports.ts'
@@ -118,19 +118,38 @@ export function createGateway({ config, log, notify, onMessage }: GatewayOptions
             }
         })
 
+        const seenGroups = new Set<string>()
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (isStale() || type !== 'notify') return
 
             for (const msg of messages) {
                 if (msg.key.fromMe) continue
                 const jid = msg.key.remoteJid || ''
-                if (isGroup(jid)) continue // groups: not yet
-                if (!extractText(msg) && !msg.message?.imageMessage) continue
+                const text = extractText(msg) || ''
+                if (!text && !msg.message?.imageMessage) continue
 
                 const sender = await resolveSender(msg.key, sock.signalRepository?.lidMapping,
                     m => console.error(`[${account}] ${m}`))
                 if (!sender) continue
-                if (!forAccountConfig(config, account).ownerNumbers.includes(sender)) {
+
+                if (isGroup(jid)) {
+                    // A group is other people's conversation. Two gates, both
+                    // required: the group is routed, and someone called the
+                    // agent by name. Everything else stays silent.
+                    const route = routeForChat(config, jid)
+                    if (!route) {
+                        // Named once per group per process: the JID is
+                        // otherwise impossible to find, and an idle group
+                        // must not flood the log.
+                        if (!seenGroups.has(jid)) {
+                            seenGroups.add(jid)
+                            log(account, `grup terlihat (belum dirutekan): ${jid}`)
+                        }
+                        continue
+                    }
+                    if (!route.trigger || !text.toLowerCase().includes(route.trigger)) continue
+                    log(account, `grup ${route.name}: dipanggil ${sender}`)
+                } else if (!forAccountConfig(config, account).ownerNumbers.includes(sender)) {
                     log(account, `pesan dari ${sender} diabaikan (bukan owner)`)
                     continue
                 }

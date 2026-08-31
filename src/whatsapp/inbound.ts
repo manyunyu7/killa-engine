@@ -27,12 +27,20 @@ export interface LidResolver {
  * signal-repository lookup. Returns null when the number can't be known —
  * callers must treat that as "not an owner".
  */
+export const isGroup = (jid: string): boolean => jid.endsWith('@g.us')
+
 export async function resolveSender(
-    key: { remoteJid?: string | null; remoteJidAlt?: string | null; participantAlt?: string | null },
+    key: { remoteJid?: string | null; remoteJidAlt?: string | null;
+           participant?: string | null; participantAlt?: string | null },
     lookup: LidResolver | undefined,
     onError: (msg: string) => void = () => {},
 ): Promise<string | null> {
-    const jid = key.remoteJid || ''
+    // In a group `remoteJid` is the group itself; the person who typed is in
+    // `participant`. Reading the group id as the sender makes every member
+    // look like one caller — no per-person rules, one shared session.
+    const jid = isGroup(key.remoteJid || '')
+        ? (key.participant || key.participantAlt || '')
+        : (key.remoteJid || '')
     if (!jid.endsWith('@lid')) return jid.split('@')[0] || null
 
     const alt = key.remoteJidAlt || key.participantAlt
@@ -46,8 +54,6 @@ export async function resolveSender(
     }
     return null
 }
-
-export const isGroup = (jid: string): boolean => jid.endsWith('@g.us')
 
 export function imageExtension(mimetype: string | null | undefined): string {
     return (mimetype || 'image/jpeg').split('/')[1]?.split(';')[0] || 'jpeg'

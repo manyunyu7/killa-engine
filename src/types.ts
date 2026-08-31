@@ -39,6 +39,10 @@ export interface AgentResult {
 }
 
 export interface AgentRun {
+    /** OS user to run the agent as, via the sudo bridge. Null = this user. */
+    runAs?: string | null
+    /** Extra env for this run only — how an elevated credential reaches the agent. */
+    extraEnv?: Record<string, string>
     text: string
     sessionId: string | null
     workspace: string
@@ -51,6 +55,23 @@ export interface ProbeResult {
     message: string
 }
 
+/**
+ * One group the engine is allowed to answer in. Groups are opt-in by JID and
+ * silent unless called by name; `runAs` hands the agent to another OS user so
+ * a group cannot reach the owner's private workspace.
+ */
+export interface GroupRoute {
+    name: string
+    jid: string
+    workspaceDir: string
+    trigger: string | null
+    runAs: string | null
+    /** Numbers in this group allowed to reach the wider credential. */
+    elevated: string[]
+    /** Credential handed to the agent only for an elevated sender. Never on disk. */
+    elevatedEnv: Record<string, string>
+}
+
 export interface Config {
     root: string
     accounts: string[]
@@ -59,6 +80,8 @@ export interface Config {
     workspaceDir: string
     /** Root the engine keeps managed workspaces in. */
     workspacesDir: string
+    /** Group routes, by JID. Empty = the engine ignores every group. */
+    groups: GroupRoute[]
     perAccount: Record<string, { workspaceDir?: string; ownerNumbers?: string[] }>
     sessionDir: string
     stateDir: string

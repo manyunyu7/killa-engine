@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { buildPrompt, deliver, dispatch, NO_REMINDERS } from '../src/core/dispatch.ts'
-import { fakeChat, flush, makeDeps } from './helpers.ts'
+import { buildPrompt, chatKey, deliver, dispatch, elevatedEnvFor, NO_REMINDERS } from '../src/core/dispatch.ts'
+import { fakeChat, flush, makeDeps, testConfig } from './helpers.ts'
 
+const DM_KEY = '628111@s.whatsapp.net#628111'
 beforeAll(() => { process.env.TZ = 'Asia/Jakarta' })
 
 const msg = (text: string) => ({ text, hasImage: false, imagePath: null })
@@ -9,11 +10,11 @@ const msg = (text: string) => ({ text, hasImage: false, imagePath: null })
 describe('slash commands', () => {
     it('/new clears the session and says so', async () => {
         const deps = makeDeps()
-        deps.sessions.remember('628111', 'sess-1')
+        deps.sessions.remember(DM_KEY, 'sess-1')
         const chat = fakeChat()
 
         expect(await dispatch(chat, msg('/new'), deps)).toBe(true)
-        expect(deps.sessions.get('628111')).toBeNull()
+        expect(deps.sessions.get(DM_KEY)).toBeNull()
         expect(chat.texts[0]).toContain('sesi baru')
     })
 
@@ -64,27 +65,27 @@ describe('slash commands', () => {
 
         await dispatch(chat, msg('/model opus'), deps)
         expect(deps.probeModel).toHaveBeenCalledWith('opus', '/ws')
-        expect(deps.models.get('628111')).toBe('opus')
+        expect(deps.models.get(DM_KEY)).toBe('opus')
         expect(chat.texts.at(-1)).toContain('pakai opus')
     })
 
     it('/model <name> relays claude’s rejection and keeps the old model', async () => {
         const deps = makeDeps({ probeModel: vi.fn(async () => ({ ok: false, message: 'no such model' })) })
-        deps.models.set('628111', 'opus')
+        deps.models.set(DM_KEY, 'opus')
         const chat = fakeChat()
 
         await dispatch(chat, msg('/model bogus'), deps)
         expect(chat.texts.at(-1)).toContain('no such model')
-        expect(deps.models.get('628111')).toBe('opus')
+        expect(deps.models.get(DM_KEY)).toBe('opus')
     })
 
     it('/model default clears the choice without probing', async () => {
         const deps = makeDeps()
-        deps.models.set('628111', 'opus')
+        deps.models.set(DM_KEY, 'opus')
         const chat = fakeChat()
 
         await dispatch(chat, msg('/model default'), deps)
-        expect(deps.models.get('628111')).toBeUndefined()
+        expect(deps.models.get(DM_KEY)).toBeUndefined()
         expect(deps.probeModel).not.toHaveBeenCalled()
     })
 
@@ -113,14 +114,14 @@ describe('agent turn', () => {
             text: 'halo', sessionId: null, workspace: '/ws', timeoutMs: 300_000,
         }))
         expect(chat.texts).toEqual(['halo'])
-        expect(deps.sessions.get('628111')).toBe('sess-1')
+        expect(deps.sessions.get(DM_KEY)).toBe('sess-1')
         expect(chat.presences).toEqual(['composing', 'paused'])
     })
 
     it('resumes an existing session and passes the chosen model', async () => {
         const deps = makeDeps()
-        deps.sessions.remember('628111', 'sess-9')
-        deps.models.set('628111', 'opus')
+        deps.sessions.remember(DM_KEY, 'sess-9')
+        deps.models.set(DM_KEY, 'opus')
 
         await dispatch(fakeChat(), msg('halo'), deps)
         await flush()
@@ -240,5 +241,49 @@ describe('deliver', () => {
         await deliver(chat, '[[remind:in 5m|x]]', makeDeps())
         expect(chat.texts).toHaveLength(1)
         expect(chat.texts[0]).toContain('Diingetin')
+    })
+})
+
+describe('elevated credential', () => {
+    const route = {
+        name: 'railway', jid: '12345@g.us', workspaceDir: '/rw',
+        trigger: 'meii', runAs: 'killa-rw',
+        elevated: ['6282113530950'],
+        elevatedEnv: { KILLA_DB_USER: 'killa_owner', KILLA_DB_PASS: 'rahasia' },
+    }
+    const config = testConfig({ groups: [route] })
+
+    it('hands the wider credential to a listed sender', () => {
+        expect(elevatedEnvFor(config, { jid: '12345@g.us', number: '6282113530950' }))
+            .toEqual({ KILLA_DB_USER: 'killa_owner', KILLA_DB_PASS: 'rahasia' })
+    })
+
+    it('gives everyone else nothing — not a narrower one, nothing', () => {
+        expect(elevatedEnvFor(config, { jid: '12345@g.us', number: '628999' })).toEqual({})
+    })
+
+    it('does not leak into a chat that is not the routed group', () => {
+        expect(elevatedEnvFor(config, { jid: '628111@s.whatsapp.net', number: '6282113530950' })).toEqual({})
+    })
+})
+
+describe('per-conversation state', () => {
+    it('keeps a DM and a group apart for the same person', () => {
+        // The bug this exists to prevent: one number talking to two workspaces
+        // shared a session id, and resuming it in the other one failed with
+        // "sesi agent bermasalah".
+        const dm = chatKey({ jid: '628111@s.whatsapp.net', number: '628111' })
+        const group = chatKey({ jid: '12345@g.us', number: '628111' })
+        expect(dm).not.toBe(group)
+    })
+
+    it('keeps two people in one group apart', () => {
+        expect(chatKey({ jid: '12345@g.us', number: '628111' }))
+            .not.toBe(chatKey({ jid: '12345@g.us', number: '628222' }))
+    })
+
+    it('is stable for the same conversation', () => {
+        expect(chatKey({ jid: '12345@g.us', number: '628111' }))
+            .toBe(chatKey({ jid: '12345@g.us', number: '628111' }))
     })
 })

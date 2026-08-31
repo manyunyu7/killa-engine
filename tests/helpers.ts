@@ -27,6 +27,7 @@ export const testConfig = (over: Partial<Config> = {}): Config => ({
     ownerNumbers: ['628111'],
     workspaceDir: '/ws',
     workspacesDir: '/home/killa/.killa/workspaces',
+    groups: [],
     perAccount: {},
     sessionDir: '/root/sessions',
     stateDir: '/root/state',

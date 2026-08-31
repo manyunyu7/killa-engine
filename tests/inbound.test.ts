@@ -5,6 +5,26 @@ import path from 'node:path'
 import type { WAMessage } from 'baileys'
 import { extractText, imageExtension, isGroup, resolveSender, saveIncomingImage } from '../src/whatsapp/inbound.ts'
 
+describe('resolveSender in groups', () => {
+    it('reads the person, not the group', async () => {
+        // remoteJid is the group; the human is in participant.
+        const got = await resolveSender(
+            { remoteJid: '12345@g.us', participant: '628999@s.whatsapp.net' }, undefined)
+        expect(got).toBe('628999')
+    })
+
+    it('falls back to participantAlt when participant is a lid', async () => {
+        const got = await resolveSender(
+            { remoteJid: '12345@g.us', participant: '', participantAlt: '628777@s.whatsapp.net' }, undefined)
+        expect(got).toBe('628777')
+    })
+
+    it('still reads remoteJid for a direct message', async () => {
+        const got = await resolveSender({ remoteJid: '628111@s.whatsapp.net' }, undefined)
+        expect(got).toBe('628111')
+    })
+})
+
 describe('extractText', () => {
     it.each([
         [{ conversation: 'halo' }, 'halo'],

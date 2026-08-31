@@ -8,7 +8,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import type { Config } from './types.ts'
+import type { Config, GroupRoute } from './types.ts'
 
 /**
  * Workspaces live in one place the engine owns, so "where do I put it" is
@@ -66,6 +66,25 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
 
     const accounts = list(env.ACCOUNTS).length ? list(env.ACCOUNTS) : ['main']
 
+    // GROUPS names the routes; each one is configured by suffix, the same way
+    // accounts are. Adding the next group is three lines of env, no code.
+    const groups: GroupRoute[] = []
+    for (const name of list(env.GROUPS)) {
+        const key = (k: string) => env[`${k}_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`]
+        const ws = key('GROUP_WORKSPACE') ?? ''
+        groups.push({
+            name,
+            jid: (key('GROUP_JID') ?? '').trim(),
+            workspaceDir: ws ? resolveWorkspace(ws, workspacesDir, home) : '',
+            trigger: (key('GROUP_TRIGGER') ?? '').trim().toLowerCase() || null,
+            runAs: (key('GROUP_RUNAS') ?? '').trim() || null,
+            elevated: list(key('GROUP_ELEVATED')).map(v => v.replace(/\D/g, '')).filter(Boolean),
+            elevatedEnv: key('GROUP_ELEVATED_DBUSER')
+                ? { KILLA_DB_USER: key('GROUP_ELEVATED_DBUSER')!, KILLA_DB_PASS: key('GROUP_ELEVATED_DBPASS') ?? '' }
+                : {},
+        })
+    }
+
     // One process can serve several numbers with different personas: each
     // account may name its own workspace and its own owners.
     const perAccount: Config['perAccount'] = {}
@@ -85,6 +104,7 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         ownerNumbers,
         workspaceDir,
         workspacesDir,
+        groups,
         perAccount,
         sessionDir: env.SESSION_DIR || path.join(root, 'sessions'),
         stateDir,
@@ -107,11 +127,27 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
             errors.push(`workspace akun ${account} tidak ditemukan: ${over.workspaceDir}`)
         }
     }
+    for (const g of groups) {
+        if (!g.jid.endsWith('@g.us')) errors.push(`GROUP_JID_${g.name.toUpperCase()} harus berakhiran @g.us: ${g.jid || '(kosong)'}`)
+        if (!g.trigger) errors.push(`GROUP_TRIGGER_${g.name.toUpperCase()} wajib — tanpa itu agent nyaut tiap pesan grup.`)
+        if (!g.workspaceDir) errors.push(`GROUP_WORKSPACE_${g.name.toUpperCase()} wajib.`)
+        if (g.elevated.length && !Object.keys(g.elevatedEnv).length) {
+            errors.push(`GROUP_ELEVATED_${g.name.toUpperCase()} diisi tapi GROUP_ELEVATED_DBUSER_${g.name.toUpperCase()} kosong — tidak ada yang bisa dielevasi.`)
+        }
+        // A runAs workspace lives in the other user's home, which this process
+        // deliberately cannot stat — so only check what we can actually see.
+        else if (!g.runAs && !exists(g.workspaceDir)) errors.push(`workspace grup ${g.name} tidak ditemukan: ${g.workspaceDir}`)
+    }
     if (!ownerNumbers.length && !Object.values(perAccount).some(a => a.ownerNumbers?.length)) {
         errors.push('OWNER_NUMBERS wajib diisi — tanpa ini semua pesan diabaikan.')
     }
 
     return { config, errors }
+}
+
+/** The group route for a chat, or null when the chat is not a routed group. */
+export function routeForChat(config: Config, jid: string): GroupRoute | null {
+    return config.groups.find(g => g.jid === jid) ?? null
 }
 
 /** The workspace and owner list that apply to one account. */

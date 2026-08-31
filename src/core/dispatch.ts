@@ -5,10 +5,11 @@
  * decision actually lives — is exercised end to end by the tests.
  */
 
-import { forAccountConfig } from '../config.ts'
+import { forAccountConfig, routeForChat } from '../config.ts'
 import { chunk, parseReply } from './markers.ts'
 import { describe } from './schedule.ts'
 import type { Chat, Deps, Incoming } from './ports.ts'
+import type { Config } from '../types.ts'
 
 export const NO_REMINDERS = '⏰ Belum ada reminder. Minta saja: "ingetin aku jam 7 minum obat".'
 
@@ -19,14 +20,14 @@ export async function dispatch(chat: Chat, incoming: Incoming, deps: Deps): Prom
     if (text === '/reminders') { await cmdReminders(chat, deps); return true }
     if (text.startsWith('/cancel')) { await cmdCancel(chat, text, deps); return true }
     if (text === '/new') {
-        deps.sessions.remember(chat.number, null)
+        deps.sessions.remember(chatKey(chat), null)
         await chat.sendText('🆕 Oke, sesi baru dimulai.')
         return true
     }
     if (text.startsWith('/model')) { await cmdModel(chat, text, deps); return true }
 
     // Not a command: one agent run at a time per chat.
-    void deps.queue.enqueue(chat.number, () => runTurn(chat, incoming, deps))
+    void deps.queue.enqueue(chatKey(chat), () => runTurn(chat, incoming, deps))
     return false
 }
 
@@ -49,12 +50,12 @@ async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
     const arg = text.split(/\s+/)[1]?.toLowerCase()
 
     if (!arg) {
-        await chat.sendText(`🧠 Model sekarang: ${deps.models.get(chat.number) ?? 'default'}\n`
+        await chat.sendText(`🧠 Model sekarang: ${deps.models.get(chatKey(chat)) ?? 'default'}\n`
             + `Ganti: /model ${deps.modelAliases.join(' | ')}\nBalik ke default: /model default`)
         return
     }
     if (arg === 'default') {
-        deps.models.set(chat.number, null)
+        deps.models.set(chatKey(chat), null)
         await chat.sendText('🧠 Oke, balik ke model default.')
         return
     }
@@ -63,7 +64,7 @@ async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
     await chat.sendText(`⏳ Ngecek ${arg} ke Claude...`)
     const probe = await deps.probeModel(arg, forAccountConfig(deps.config, chat.account).workspaceDir)
     if (probe.ok) {
-        deps.models.set(chat.number, arg)
+        deps.models.set(chatKey(chat), arg)
         await chat.sendText(`🧠 Oke, pakai ${arg} mulai pesan berikutnya.`)
     } else {
         await chat.sendText(`❌ ${probe.message || 'model ditolak claude'}`)
@@ -76,17 +77,47 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
 
     const { reply, sessionId } = await deps.runAgent({
         text: buildPrompt(incoming),
-        sessionId: deps.sessions.get(chat.number),
-        // Per-account workspace: one process can run several personas.
-        workspace: forAccountConfig(deps.config, chat.account).workspaceDir,
+        sessionId: deps.sessions.get(chatKey(chat)),
+        // A routed group brings its own workspace (and its own OS user);
+        // everything else uses the account's.
+        workspace: routeForChat(deps.config, chat.jid)?.workspaceDir
+            ?? forAccountConfig(deps.config, chat.account).workspaceDir,
+        runAs: routeForChat(deps.config, chat.jid)?.runAs ?? null,
+        // The wider credential exists only in this spawn's env, and only for
+        // a sender on the list. Nothing the agent is told can conjure it.
+        extraEnv: elevatedEnvFor(deps.config, chat),
         timeoutMs: deps.config.agentTimeoutMs,
-        model: deps.models.get(chat.number),
+        model: deps.models.get(chatKey(chat)),
     })
-    deps.sessions.remember(chat.number, sessionId)
+    deps.sessions.remember(chatKey(chat), sessionId)
 
     await chat.presence('paused').catch(() => {}) // cosmetic
     await deliver(chat, reply, deps)
     deps.log(chat.account, `agent -> ${chat.number}: ${reply.length} char`)
+}
+
+/**
+ * The key for per-conversation state.
+ *
+ * A session belongs to a conversation, not to a person: the same number can be
+ * talking to two different workspaces (a DM and a routed group), and those runs
+ * may not even share an OS user — so a session id from one is meaningless, and
+ * resuming it fails. Including the jid keeps them apart; including the number
+ * keeps two people in one group from sharing a thread.
+ */
+export const chatKey = (chat: { jid: string; number: string }): string => `${chat.jid}#${chat.number}`
+
+/**
+ * The elevated credential for this chat's sender, or nothing.
+ *
+ * The wider database account never sits in the workspace `.env`; it reaches
+ * the agent only through this run's environment, and only when the person who
+ * typed is on the route's list. No prompt can talk its way into it.
+ */
+export function elevatedEnvFor(config: Config, chat: { jid: string; number: string }): Record<string, string> {
+    const route = routeForChat(config, chat.jid)
+    if (!route || !route.elevated.includes(chat.number)) return {}
+    return route.elevatedEnv
 }
 
 export function buildPrompt(incoming: Incoming): string {

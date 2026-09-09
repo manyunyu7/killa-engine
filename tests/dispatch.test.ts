@@ -225,6 +225,28 @@ describe('deliver', () => {
         expect(chat.imagesSent).toEqual(['/tmp/a.png'])
     })
 
+    it('sends a docx as a document, not as an image', async () => {
+        // The same marker carries both; sent as an image a .docx arrives broken.
+        const chat = fakeChat()
+        await deliver(chat, 'ini laporannya sayang [[send:/tmp/laprak.docx]]', makeDeps())
+        expect(chat.docsSent).toEqual(['/tmp/laprak.docx'])
+        expect(chat.imagesSent).toEqual([])
+        expect(chat.texts).toEqual(['ini laporannya sayang'])
+    })
+
+    it('sorts a mixed batch by kind', async () => {
+        const chat = fakeChat()
+        await deliver(chat, '[[send:/tmp/a.png]] [[send:/tmp/b.pdf]]', makeDeps())
+        expect(chat.imagesSent).toEqual(['/tmp/a.png'])
+        expect(chat.docsSent).toEqual(['/tmp/b.pdf'])
+    })
+
+    it('says "file" not "gambar" when a document fails', async () => {
+        const chat = fakeChat({ sendDocument: async () => { throw new Error('boom') } })
+        await deliver(chat, '[[send:/tmp/laprak.docx]]', makeDeps())
+        expect(chat.texts.join()).toContain('Gagal mengirim file laprak.docx')
+    })
+
     it('skips an image the agent hallucinated', async () => {
         const chat = fakeChat()
         await deliver(chat, 'nih [[send:/nope.png]]', makeDeps({ fileExists: () => false }))

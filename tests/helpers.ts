@@ -45,6 +45,7 @@ export const testConfig = (over: Partial<Config> = {}): Config => ({
 export interface FakeChat extends Chat {
     texts: string[]
     imagesSent: string[]
+    docsSent: string[]
     presences: string[]
 }
 
@@ -55,9 +56,11 @@ export function fakeChat(over: Partial<Chat> = {}): FakeChat {
         jid: '628111@s.whatsapp.net',
         texts: [],
         imagesSent: [],
+        docsSent: [],
         presences: [],
         async sendText(t) { chat.texts.push(t) },
         async sendImage(f) { chat.imagesSent.push(f) },
+        async sendDocument(f) { chat.docsSent.push(f) },
         async presence(s) { chat.presences.push(s) },
         ...over,
     }

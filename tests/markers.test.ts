@@ -3,12 +3,12 @@ import { chunk, parseReply } from '../src/core/markers.ts'
 
 describe('parseReply', () => {
     it('leaves an ordinary reply untouched', () => {
-        expect(parseReply('halo sayanggg')).toEqual({ text: 'halo sayanggg', images: [], reminders: [] })
+        expect(parseReply('halo sayanggg')).toEqual({ text: 'halo sayanggg', files: [], reminders: [] })
     })
 
     it('extracts image markers and strips them from the text', () => {
         const r = parseReply('nih fotonya [[send:/tmp/a.png]] lucu kan')
-        expect(r.images).toEqual(['/tmp/a.png'])
+        expect(r.files).toEqual(['/tmp/a.png'])
         expect(r.text).toBe('nih fotonya  lucu kan')
     })
 
@@ -20,7 +20,7 @@ describe('parseReply', () => {
 
     it('handles several markers of both kinds in one reply', () => {
         const r = parseReply('[[send:/a.png]] x [[remind:in 5m|a]] y [[send:/b.png]] [[remind:in 6m|b]]')
-        expect(r.images).toEqual(['/a.png', '/b.png'])
+        expect(r.files).toEqual(['/a.png', '/b.png'])
         expect(r.reminders.map(x => x.text)).toEqual(['a', 'b'])
         expect(r.text).toBe('x  y')
     })
@@ -36,14 +36,14 @@ describe('parseReply', () => {
     it('ignores malformed markers instead of mangling the reply', () => {
         for (const bad of ['[[send:]]x', '[[remind:no-pipe]]', '[[ send:/a.png ]]', '[[unknown:x]]']) {
             const r = parseReply(bad)
-            expect(r.images.filter(Boolean)).toEqual([])
+            expect(r.files.filter(Boolean)).toEqual([])
             expect(r.reminders).toEqual([])
             expect(r.text.length).toBeGreaterThan(0)
         }
     })
 
     it('survives empty and non-string input', () => {
-        expect(parseReply('')).toEqual({ text: '', images: [], reminders: [] })
+        expect(parseReply('')).toEqual({ text: '', files: [], reminders: [] })
         expect(parseReply(undefined as unknown as string).text).toBe('')
     })
 })

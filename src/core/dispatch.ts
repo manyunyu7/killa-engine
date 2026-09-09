@@ -6,6 +6,7 @@
  */
 
 import { routeForChat, workspaceFor } from '../config.ts'
+import { isImageFile } from './files.ts'
 import { chunk, parseReply } from './markers.ts'
 import { describe } from './schedule.ts'
 import type { Chat, Deps, Incoming } from './ports.ts'
@@ -128,7 +129,7 @@ export function buildPrompt(incoming: Incoming): string {
         : `${incoming.text}\n\n[User mengirim gambar tapi gagal diunduh — beri tahu user.]`
 }
 
-/** Send a reply: text chunks, then images, then reminder confirmations. */
+/** Send a reply: text chunks, then attachments, then reminder confirmations. */
 export async function deliver(chat: Chat, reply: string, deps: Deps): Promise<void> {
     const parsed = parseReply(reply)
 
@@ -141,16 +142,18 @@ export async function deliver(chat: Chat, reply: string, deps: Deps): Promise<vo
     const chunks = chunk(parsed.text)
     for (const part of chunks) await chat.sendText(part)
 
-    const images = parsed.images.filter(f => deps.fileExists(f))
-    for (const file of images) {
-        try { await chat.sendImage(file) }
+    const files = parsed.files.filter(f => deps.fileExists(f))
+    for (const file of files) {
+        const image = isImageFile(file)
+        try { await (image ? chat.sendImage(file) : chat.sendDocument(file)) }
         catch (e) {
-            deps.log(chat.account, `gagal kirim gambar: ${(e as Error).message}`)
-            await chat.sendText(`⚠️ Gagal mengirim gambar ${file.split('/').pop()}`)
+            const what = image ? 'gambar' : 'file'
+            deps.log(chat.account, `gagal kirim ${what}: ${(e as Error).message}`)
+            await chat.sendText(`⚠️ Gagal mengirim ${what} ${file.split('/').pop()}`)
         }
     }
 
     for (const r of scheduled) await chat.sendText(`⏰ Diingetin: ${describe(r)}`)
 
-    if (!chunks.length && !images.length && !scheduled.length) await chat.sendText('(kosong)')
+    if (!chunks.length && !files.length && !scheduled.length) await chat.sendText('(kosong)')
 }

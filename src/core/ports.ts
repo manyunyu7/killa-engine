@@ -19,6 +19,8 @@ export interface Chat {
     jid: string
     sendText(text: string): Promise<void>
     sendImage(file: string): Promise<void>
+    /** Send a file as a document (docx, pdf, xlsx, …), keeping its filename. */
+    sendDocument(file: string): Promise<void>
     presence(state: 'composing' | 'paused'): Promise<void>
 }
 

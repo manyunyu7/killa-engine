@@ -23,6 +23,7 @@ import {
 import { forAccountConfig, routeForChat } from '../config.ts'
 import type { Config, Logger } from '../types.ts'
 import { extractText, isGroup, resolveSender, saveIncomingImage } from './inbound.ts'
+import { mimeFor } from '../core/files.ts'
 import type { Chat } from '../core/ports.ts'
 
 export interface AccountState {
@@ -59,6 +60,15 @@ export function createGateway({ config, log, notify, onMessage }: GatewayOptions
             account, jid, number,
             sendText: async text => { await sock.sendMessage(jid, { text }) },
             sendImage: async file => { await sock.sendMessage(jid, { image: fs.readFileSync(file) }) },
+            sendDocument: async file => {
+                await sock.sendMessage(jid, {
+                    document: fs.readFileSync(file),
+                    // WhatsApp shows the filename, not the path, and needs a
+                    // mimetype it recognizes or the file arrives unopenable.
+                    fileName: path.basename(file),
+                    mimetype: mimeFor(file),
+                })
+            },
             presence: async state => { await sock.sendPresenceUpdate(state, jid) },
         }
     }

@@ -46,6 +46,31 @@ const num = (v: string | undefined, fallback: number) => {
 
 const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean)
 
+/**
+ * "628xxx:mybabygurll, 628yyy:kerja" -> { "628xxx": "/abs/path", ... }.
+ *
+ * Workspace is otherwise a property of the *account* — the number the bot logs
+ * in as. This is the escape hatch for the common case of one bot number and
+ * several people DMing it: without it, adding someone to OWNER_NUMBERS hands
+ * them your MEMORY.md. Malformed entries are reported, not silently dropped —
+ * a typo here would quietly route someone into the wrong persona.
+ */
+function parseContactMap(raw: string | undefined, workspacesDir: string, home: string,
+                         problems: string[], label: string): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const entry of list(raw)) {
+        const cut = entry.lastIndexOf(':')
+        const number = (cut < 0 ? '' : entry.slice(0, cut)).replace(/\D/g, '')
+        const ref = cut < 0 ? '' : entry.slice(cut + 1).trim()
+        if (!number || !ref) {
+            problems.push(`${label} tidak valid: "${entry}" — formatnya <nomor>:<workspace>.`)
+            continue
+        }
+        out[number] = resolveWorkspace(ref, workspacesDir, home)
+    }
+    return out
+}
+
 /** Per-account overrides: WORKSPACE_KERJA / OWNER_NUMBERS_KERJA. */
 const forAccount = (env: NodeJS.ProcessEnv, key: string, account: string) =>
     env[`${key}_${account.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`]
@@ -65,6 +90,10 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         : env.WORKSPACE ? resolveWorkspace(env.WORKSPACE, workspacesDir, home) : ''
 
     const accounts = list(env.ACCOUNTS).length ? list(env.ACCOUNTS) : ['main']
+
+    const errors: string[] = []
+    const contactWorkspaces = parseContactMap(env.CONTACT_WORKSPACES, workspacesDir, home,
+                                              errors, 'CONTACT_WORKSPACES')
 
     // GROUPS names the routes; each one is configured by suffix, the same way
     // accounts are. Adding the next group is three lines of env, no code.
@@ -91,10 +120,13 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
     for (const account of accounts) {
         const ws = forAccount(env, 'WORKSPACE', account) ?? forAccount(env, 'WORKSPACE_DIR', account)
         const owners = forAccount(env, 'OWNER_NUMBERS', account)
-        if (!ws && !owners) continue
+        const contacts = forAccount(env, 'CONTACT_WORKSPACES', account)
+        if (!ws && !owners && !contacts) continue
         perAccount[account] = {
             ...(ws ? { workspaceDir: resolveWorkspace(ws, workspacesDir, home) } : {}),
             ...(owners ? { ownerNumbers: list(owners).map(s => s.replace(/\D/g, '')).filter(Boolean) } : {}),
+            ...(contacts ? { contactWorkspaces: parseContactMap(contacts, workspacesDir, home,
+                                                                errors, `CONTACT_WORKSPACES_${account}`) } : {}),
         }
     }
 
@@ -105,6 +137,7 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         workspaceDir,
         workspacesDir,
         groups,
+        contactWorkspaces,
         perAccount,
         sessionDir: env.SESSION_DIR || path.join(root, 'sessions'),
         stateDir,
@@ -119,7 +152,6 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
             : null,
     }
 
-    const errors: string[] = []
     if (!workspaceDir) errors.push('WORKSPACE wajib diisi (nama workspace, atau WORKSPACE_DIR untuk path penuh).')
     else if (!exists(workspaceDir)) errors.push(`workspace tidak ditemukan: ${workspaceDir}`)
     for (const [account, over] of Object.entries(perAccount)) {
@@ -138,6 +170,16 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         // deliberately cannot stat — so only check what we can actually see.
         else if (!g.runAs && !exists(g.workspaceDir)) errors.push(`workspace grup ${g.name} tidak ditemukan: ${g.workspaceDir}`)
     }
+    const contactMaps: [string, Record<string, string>][] = [['', contactWorkspaces],
+        ...Object.entries(perAccount).map(([a, o]) =>
+            [a, o.contactWorkspaces ?? {}] as [string, Record<string, string>])]
+    for (const [account, map] of contactMaps) {
+        for (const [number, dir] of Object.entries(map)) {
+            if (!exists(dir)) {
+                errors.push(`workspace kontak ${number}${account ? ` (akun ${account})` : ''} tidak ditemukan: ${dir}`)
+            }
+        }
+    }
     if (!ownerNumbers.length && !Object.values(perAccount).some(a => a.ownerNumbers?.length)) {
         errors.push('OWNER_NUMBERS wajib diisi — tanpa ini semua pesan diabaikan.')
     }
@@ -150,11 +192,24 @@ export function routeForChat(config: Config, jid: string): GroupRoute | null {
     return config.groups.find(g => g.jid === jid) ?? null
 }
 
-/** The workspace and owner list that apply to one account. */
-export function forAccountConfig(config: Config, account: string): { workspaceDir: string; ownerNumbers: string[] } {
+/** The workspace, owner list and contact routing that apply to one account. */
+export function forAccountConfig(config: Config, account: string):
+        { workspaceDir: string; ownerNumbers: string[]; contactWorkspaces: Record<string, string> } {
     const over = config.perAccount[account]
+    const contacts = over?.contactWorkspaces
     return {
         workspaceDir: over?.workspaceDir || config.workspaceDir,
         ownerNumbers: over?.ownerNumbers?.length ? over.ownerNumbers : config.ownerNumbers,
+        // Per-account map replaces the global one, the way ownerNumbers does.
+        contactWorkspaces: contacts && Object.keys(contacts).length ? contacts : config.contactWorkspaces,
     }
+}
+
+/**
+ * The workspace a DM runs in: the contact's own if mapped, else the account's.
+ * Group chats never reach this — `routeForChat` decides those first.
+ */
+export function workspaceFor(config: Config, account: string, number: string): string {
+    const { workspaceDir, contactWorkspaces } = forAccountConfig(config, account)
+    return contactWorkspaces[number.replace(/\D/g, '')] || workspaceDir
 }

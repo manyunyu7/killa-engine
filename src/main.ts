@@ -115,8 +115,11 @@ setInterval(() => {
 
 console.log(`killa-engine start — akun: ${config.accounts.join(', ')}`)
 for (const account of config.accounts) {
-    const { workspaceDir, ownerNumbers } = forAccountConfig(config, account)
+    const { workspaceDir, ownerNumbers, contactWorkspaces } = forAccountConfig(config, account)
     console.log(`  ${account} → ${workspaceDir}  (owner: ${ownerNumbers.join(', ')})`)
+    for (const [number, dir] of Object.entries(contactWorkspaces)) {
+        console.log(`    ${number} → ${dir}`)
+    }
 }
 console.log(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} — sekarang `
     + new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }))

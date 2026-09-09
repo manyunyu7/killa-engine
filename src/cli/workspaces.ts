@@ -25,9 +25,25 @@ const ask = (q: string, def: string): Promise<string> => new Promise(resolve => 
 // so `list` can show what is broken instead of refusing to run.
 const { config } = parseConfig(process.env, ROOT, () => true)
 
-/** Which accounts point at a given directory. */
+/** Which accounts (or mapped contacts) point at a given directory. */
 function usedBy(dir: string): string[] {
-    return config.accounts.filter(a => forAccountConfig(config, a).workspaceDir === dir)
+    const users: string[] = []
+    for (const a of config.accounts) {
+        const { workspaceDir, contactWorkspaces } = forAccountConfig(config, a)
+        if (workspaceDir === dir) users.push(a)
+        for (const [number, d] of Object.entries(contactWorkspaces)) {
+            if (d === dir) users.push(`${a}/${number}`)
+        }
+    }
+    return users
+}
+
+/** Every directory some account or mapped contact is pointed at. */
+function configuredDirs(): string[] {
+    return config.accounts.flatMap(a => {
+        const { workspaceDir, contactWorkspaces } = forAccountConfig(config, a)
+        return [workspaceDir, ...Object.values(contactWorkspaces)]
+    }).filter(Boolean)
 }
 
 function list(): void {
@@ -37,7 +53,7 @@ function list(): void {
         : []
     // A workspace configured by absolute path lives outside the root but is
     // just as real — show it, or `list` lies about what is running.
-    const configured = config.accounts.map(a => forAccountConfig(config, a).workspaceDir).filter(Boolean)
+    const configured = configuredDirs()
     const all = [...new Set([...managed, ...configured])].sort()
 
     console.log(`\n📁 workspaces root: ${root}\n`)

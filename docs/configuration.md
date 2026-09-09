@@ -39,6 +39,7 @@ A workspace you keep outside the root (a git repo, say) is fully supported — p
 | `ACCOUNTS` | `main` | Comma-separated labels; each is one WhatsApp login with its own `sessions/<label>/` dir and QR (`qr-<label>.png`). Add a label + restart to pair a second number. |
 | `WORKSPACE_<LABEL>` | `WORKSPACE` | Workspace for one account — a different persona and memory on a different number, in the same process. Label upper-cased, non-alphanumerics become `_` (`kerja-2` → `WORKSPACE_KERJA_2`). |
 | `OWNER_NUMBERS_<LABEL>` | `OWNER_NUMBERS` | Owners for one account. With this, a second person gets their own number, workspace and memory without a second instance. |
+| `CONTACT_WORKSPACES` | — | `<number>:<workspace>` pairs, comma-separated — DMs from those numbers run in that workspace instead of the account's: `CONTACT_WORKSPACES=6285647281472:mybabygurll, 628222:kerja`. The number is normalized to digits, so `+62 856-4728-1472` is fine; the workspace is a managed name or an absolute path. This is how a second person shares one bot number without sharing your memory. A `CONTACT_WORKSPACES_<LABEL>` scopes the map to one account and replaces the global one there. |
 | `SESSION_DIR` | `./sessions` | Where WhatsApp credentials live. **Equivalent to being logged in** — protect and back up accordingly. |
 
 ## Agent behavior

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { forAccountConfig, isWorkspaceName, parseConfig, resolveWorkspace, routeForChat } from '../src/config.ts'
+import { forAccountConfig, isWorkspaceName, parseConfig, resolveWorkspace, routeForChat, workspaceFor } from '../src/config.ts'
 
 const base = { WORKSPACE_DIR: '/ws', OWNER_NUMBERS: '628111' }
 
@@ -141,7 +141,7 @@ describe('per-account overrides', () => {
 
     it('falls back to the shared values for accounts with no override', () => {
         const { config } = parseConfig(base, '/root', () => true, home)
-        expect(forAccountConfig(config, 'kerja')).toEqual({ workspaceDir: `${root}/utama`, ownerNumbers: ['628111'] })
+        expect(forAccountConfig(config, 'kerja')).toEqual({ workspaceDir: `${root}/utama`, ownerNumbers: ['628111'], contactWorkspaces: {} })
     })
 
     it('normalizes account names into env keys', () => {
@@ -155,6 +155,41 @@ describe('per-account overrides', () => {
         const { errors } = parseConfig({ ...base, WORKSPACE_KERJA: 'hilang' }, '/root',
             p => !p.endsWith('hilang'), home)
         expect(errors.join()).toContain('akun kerja')
+    })
+
+    it('routes a mapped contact to their own workspace', () => {
+        const { config, errors } = parseConfig(
+            { ...base, WORKSPACE: 'utama', CONTACT_WORKSPACES: '+62 856-4728-1472: mybabygurll' },
+            '/root', () => true, home)
+        expect(errors).toEqual([])
+        expect(workspaceFor(config, 'main', '6285647281472')).toBe(`${root}/mybabygurll`)
+        // everyone else still lands in the account's own workspace
+        expect(workspaceFor(config, 'main', '628111')).toBe(`${root}/utama`)
+    })
+
+    it('lets an absolute path be the contact workspace', () => {
+        const { config } = parseConfig({ ...base, CONTACT_WORKSPACES: '628222:/srv/bg' }, '/root', () => true, home)
+        expect(workspaceFor(config, 'main', '628222')).toBe('/srv/bg')
+    })
+
+    it('scopes the contact map per account when asked', () => {
+        const { config } = parseConfig(
+            { ACCOUNTS: 'main,kerja', WORKSPACE: 'utama', OWNER_NUMBERS: '628111',
+              CONTACT_WORKSPACES: '628222:bg', CONTACT_WORKSPACES_KERJA: '628222:kantor' },
+            '/root', () => true, home)
+        expect(workspaceFor(config, 'kerja', '628222')).toBe(`${root}/kantor`)
+        expect(workspaceFor(config, 'main', '628222')).toBe(`${root}/bg`)
+    })
+
+    it('reports a malformed contact entry instead of ignoring it', () => {
+        const { errors } = parseConfig({ ...base, CONTACT_WORKSPACES: 'mybabygurll' }, '/root', () => true, home)
+        expect(errors.join()).toContain('CONTACT_WORKSPACES tidak valid')
+    })
+
+    it('reports a contact workspace that does not exist', () => {
+        const { errors } = parseConfig({ ...base, CONTACT_WORKSPACES: '628222:hilang' }, '/root',
+            p => !p.endsWith('hilang'), home)
+        expect(errors.join()).toContain('workspace kontak 628222')
     })
 
     it('accepts owners defined only per account', () => {

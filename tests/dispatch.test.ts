@@ -118,6 +118,39 @@ describe('agent turn', () => {
         expect(chat.presences).toEqual(['composing', 'paused'])
     })
 
+    it('runs a mapped contact in their own workspace', async () => {
+        const deps = makeDeps({ config: testConfig({ contactWorkspaces: { '6285647281472': '/ws/mybabygurll' } }) })
+
+        await dispatch(fakeChat({ number: '6285647281472' }), msg('halo'), deps)
+        await flush()
+
+        expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({ workspace: '/ws/mybabygurll' }))
+    })
+
+    it('leaves an unmapped contact in the account workspace', async () => {
+        const deps = makeDeps({ config: testConfig({ contactWorkspaces: { '6285647281472': '/ws/mybabygurll' } }) })
+
+        await dispatch(fakeChat(), msg('halo'), deps)
+        await flush()
+
+        expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({ workspace: '/ws' }))
+    })
+
+    it('lets a group route beat a contact mapping', async () => {
+        // The same person in the routed group must land in the group workspace,
+        // not their private one — otherwise a DM persona leaks into the group.
+        const deps = makeDeps({ config: testConfig({
+            contactWorkspaces: { '6285647281472': '/ws/mybabygurll' },
+            groups: [{ name: 'railway', jid: '12345@g.us', workspaceDir: '/rw',
+                       trigger: 'meii', runAs: 'killa-rw', elevated: [], elevatedEnv: {} }],
+        }) })
+
+        await dispatch(fakeChat({ jid: '12345@g.us', number: '6285647281472' }), msg('halo'), deps)
+        await flush()
+
+        expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({ workspace: '/rw' }))
+    })
+
     it('resumes an existing session and passes the chosen model', async () => {
         const deps = makeDeps()
         deps.sessions.remember(DM_KEY, 'sess-9')

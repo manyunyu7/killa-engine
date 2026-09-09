@@ -82,7 +82,13 @@ export interface Config {
     workspacesDir: string
     /** Group routes, by JID. Empty = the engine ignores every group. */
     groups: GroupRoute[]
-    perAccount: Record<string, { workspaceDir?: string; ownerNumbers?: string[] }>
+    /** Number (digits only) -> workspace, overriding the account's, for DMs. */
+    contactWorkspaces: Record<string, string>
+    perAccount: Record<string, {
+        workspaceDir?: string
+        ownerNumbers?: string[]
+        contactWorkspaces?: Record<string, string>
+    }>
     sessionDir: string
     stateDir: string
     mediaDir: string

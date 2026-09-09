@@ -5,7 +5,7 @@
  * decision actually lives — is exercised end to end by the tests.
  */
 
-import { forAccountConfig, routeForChat } from '../config.ts'
+import { routeForChat, workspaceFor } from '../config.ts'
 import { chunk, parseReply } from './markers.ts'
 import { describe } from './schedule.ts'
 import type { Chat, Deps, Incoming } from './ports.ts'
@@ -62,7 +62,8 @@ async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
 
     // Any name is allowed (aliases or full ids) — claude is the validator.
     await chat.sendText(`⏳ Ngecek ${arg} ke Claude...`)
-    const probe = await deps.probeModel(arg, forAccountConfig(deps.config, chat.account).workspaceDir)
+    const probe = await deps.probeModel(arg, routeForChat(deps.config, chat.jid)?.workspaceDir
+        ?? workspaceFor(deps.config, chat.account, chat.number))
     if (probe.ok) {
         deps.models.set(chatKey(chat), arg)
         await chat.sendText(`🧠 Oke, pakai ${arg} mulai pesan berikutnya.`)
@@ -81,7 +82,7 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
         // A routed group brings its own workspace (and its own OS user);
         // everything else uses the account's.
         workspace: routeForChat(deps.config, chat.jid)?.workspaceDir
-            ?? forAccountConfig(deps.config, chat.account).workspaceDir,
+            ?? workspaceFor(deps.config, chat.account, chat.number),
         runAs: routeForChat(deps.config, chat.jid)?.runAs ?? null,
         // The wider credential exists only in this spawn's env, and only for
         // a sender on the list. Nothing the agent is told can conjure it.

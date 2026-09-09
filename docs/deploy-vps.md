@@ -89,9 +89,18 @@ Check the size before cloning: a workspace with months of memory and a `.git` fu
 
 ### More than one person
 
-Adding a number to `OWNER_NUMBERS` gives that person **your** workspace: the same persona, the same `MEMORY.md`, the same `USER.md`. Right for your own second phone, wrong for anyone else.
+Adding a number to `OWNER_NUMBERS` gives that person **your** workspace by default: the same persona, the same `MEMORY.md`, the same `USER.md`. Right for your own second phone, wrong for anyone else.
 
-For a real second user, give them their own account — same process, separate everything that matters:
+The cheapest fix is `CONTACT_WORKSPACES` — same bot number, but that contact's DMs run somewhere else:
+
+```env
+OWNER_NUMBERS=628111...,6285647281472
+CONTACT_WORKSPACES=6285647281472:mybabygurll    # npm run workspace new mybabygurll
+```
+
+No second SIM, no QR, no restart of anything but the process. Note what it does *not* give you: the run still happens as the same OS user, so the separation is the one your `CLAUDE.md` describes, not a filesystem permission. For that, see the group routes' `GROUP_RUNAS`.
+
+For a fully separate persona on its own number, give them their own account — same process, separate everything that matters:
 
 ```env
 ACCOUNTS=main,rere
@@ -106,12 +115,13 @@ Pair a second WhatsApp number for `rere` (`qr-rere.png`) and it runs its own per
 
 A separate *instance* is only needed when the two must not share a machine account at all — different `claude` login, different OS user, different disk quota. Then it's a second clone with its own `SESSION_DIR`, `STATE_DIR` and pm2 name.
 
-| | Extra `OWNER_NUMBERS` | Extra account | Separate instance |
-|---|---|---|---|
-| Your second phone | ✅ | overkill | overkill |
-| A family member | ❌ shares your memory | ✅ | overkill |
-| A second persona for you | ❌ | ✅ | overkill |
-| Different Claude login / isolation | ❌ | ❌ | ✅ |
+| | Extra `OWNER_NUMBERS` | `CONTACT_WORKSPACES` | Extra account | Separate instance |
+|---|---|---|---|---|
+| Your second phone | ✅ | unnecessary | overkill | overkill |
+| A family member, your number | ❌ shares your memory | ✅ | overkill | overkill |
+| A family member, their own bot number | ❌ | ❌ needs a second SIM anyway | ✅ | overkill |
+| A second persona for you | ❌ | ✅ | ✅ | overkill |
+| Different Claude login / isolation | ❌ | ❌ same OS user | ❌ | ✅ |
 
 ## 5. Keep it alive: pm2
 

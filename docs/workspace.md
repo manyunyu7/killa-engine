@@ -26,7 +26,7 @@ npm run setup -- --workspace ~/killa-kerja
 
 That asks the persona questions, writes the four starter files into that folder, and stops — `.env` is never read or written. Existing files are kept, so it's safe to re-run over a workspace you've already edited.
 
-To actually run it, point an instance at it with `WORKSPACE_DIR=~/killa-kerja`. If it runs *alongside* your first instance, give it its own `SESSION_DIR` and `STATE_DIR` as well — otherwise the two processes share WhatsApp credentials and per-chat session state and will fight over both.
+To actually run it, point an instance at it with `WORKSPACE_DIR=~/killa-kerja` — or, to give it to one contact on the bot number you already have, `CONTACT_WORKSPACES=628xxx:~/killa-kerja` (see [configuration.md](configuration.md)). If it runs *alongside* your first instance, give it its own `SESSION_DIR` and `STATE_DIR` as well — otherwise the two processes share WhatsApp credentials and per-chat session state and will fight over both.
 
 Only `CLAUDE.md` is special (Claude Code loads it automatically). The others work because `CLAUDE.md` says *"read SOUL.md, USER.md, MEMORY.md before every reply"* — a convention, not a mechanism. Rename them, add `PEOPLE.md`, `HEALTH.md`, `projects/` — whatever structure fits your life. Just keep `CLAUDE.md` pointing at what matters.
 

@@ -74,7 +74,8 @@ async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
 }
 
 async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void> {
-    deps.log(chat.account, `agent <- ${chat.number}: ${incoming.hasImage ? '[gambar] ' : ''}${incoming.text.slice(0, 80)}`)
+    const tag = incoming.file ? `[${incoming.file.kind === 'image' ? 'gambar' : incoming.file.name}] ` : ''
+    deps.log(chat.account, `agent <- ${chat.number}: ${tag}${incoming.text.slice(0, 80)}`)
     await chat.presence('composing').catch(() => {}) // cosmetic
 
     const { reply, sessionId } = await deps.runAgent({
@@ -123,10 +124,20 @@ export function elevatedEnvFor(config: Config, chat: { jid: string; number: stri
 }
 
 export function buildPrompt(incoming: Incoming): string {
-    if (!incoming.hasImage) return incoming.text
-    return incoming.imagePath
-        ? `${incoming.text || '(tanpa caption)'}\n\n[User mengirim sebuah gambar. File-nya ada di ${incoming.imagePath} — baca file itu untuk melihat isinya.]`
-        : `${incoming.text}\n\n[User mengirim gambar tapi gagal diunduh — beri tahu user.]`
+    if (!incoming.hasFile) return incoming.text
+    if (!incoming.file) {
+        return `${incoming.text}\n\n[User mengirim file tapi gagal diunduh — beri tahu user.]`
+    }
+    const caption = incoming.text || '(tanpa caption)'
+    if (incoming.file.kind === 'image') {
+        return `${caption}\n\n[User mengirim sebuah gambar. File-nya ada di ${incoming.file.path}`
+            + ' — baca file itu untuk melihat isinya.]'
+    }
+    // The agent can't open a .docx directly; naming the tool here is the
+    // difference between it reading the file and it asking the user to retype.
+    return `${caption}\n\n[User mengirim dokumen "${incoming.file.name}". File-nya ada di `
+        + `${incoming.file.path} — BACA ISINYA dulu sebelum menjawab. PDF dan teks bisa dibaca `
+        + 'langsung; untuk .docx/.pptx/.xlsx jalankan: pandoc "<path>" -t plain]'
 }
 
 /** Send a reply: text chunks, then attachments, then reminder confirmations. */

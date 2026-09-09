@@ -26,9 +26,10 @@ export interface Chat {
 
 export interface Incoming {
     text: string
-    /** Absolute path of a downloaded image, or null. */
-    imagePath: string | null
-    hasImage: boolean
+    /** True when the message carried a file, even if the download failed. */
+    hasFile: boolean
+    /** The downloaded attachment, or null when there was none (or it failed). */
+    file: { path: string; kind: 'image' | 'document'; name: string } | null
 }
 
 export interface Deps {

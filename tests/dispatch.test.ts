@@ -5,7 +5,7 @@ import { fakeChat, flush, makeDeps, testConfig } from './helpers.ts'
 const DM_KEY = '628111@s.whatsapp.net#628111'
 beforeAll(() => { process.env.TZ = 'Asia/Jakarta' })
 
-const msg = (text: string) => ({ text, hasImage: false, imagePath: null })
+const msg = (text: string) => ({ text, hasFile: false, file: null })
 
 describe('slash commands', () => {
     it('/new clears the session and says so', async () => {
@@ -197,17 +197,27 @@ describe('buildPrompt', () => {
     })
 
     it('tells the agent where a downloaded image is', () => {
-        const p = buildPrompt({ text: 'lucu kan', hasImage: true, imagePath: '/tmp/a.jpg' })
+        const p = buildPrompt({ text: 'lucu kan', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } })
         expect(p).toContain('lucu kan')
         expect(p).toContain('/tmp/a.jpg')
     })
 
     it('marks a captionless image', () => {
-        expect(buildPrompt({ text: '', hasImage: true, imagePath: '/tmp/a.jpg' })).toContain('(tanpa caption)')
+        expect(buildPrompt({ text: '', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } })).toContain('(tanpa caption)')
     })
 
     it('admits a failed download instead of pretending', () => {
-        expect(buildPrompt({ text: 'nih', hasImage: true, imagePath: null })).toContain('gagal diunduh')
+        expect(buildPrompt({ text: 'nih', hasFile: true, file: null })).toContain('gagal diunduh')
+    })
+
+    it('tells the agent to READ a document, and how', () => {
+        // Without the pandoc hint the agent asks the user to retype the file.
+        const p = buildPrompt({ text: 'ini makalahnya',
+            hasFile: true, file: { path: '/tmp/in-1-makalah.docx', kind: 'document', name: 'makalah.docx' } })
+        expect(p).toContain('makalah.docx')
+        expect(p).toContain('/tmp/in-1-makalah.docx')
+        expect(p).toContain('BACA ISINYA')
+        expect(p).toContain('pandoc')
     })
 })
 

@@ -22,7 +22,7 @@ import {
 
 import { forAccountConfig, routeForChat } from '../config.ts'
 import type { Config, Logger } from '../types.ts'
-import { extractText, isGroup, resolveSender, saveIncomingImage } from './inbound.ts'
+import { extractText, isGroup, mediaOf, resolveSender, saveIncomingMedia } from './inbound.ts'
 import { mimeFor } from '../core/files.ts'
 import type { Chat } from '../core/ports.ts'
 
@@ -136,7 +136,9 @@ export function createGateway({ config, log, notify, onMessage }: GatewayOptions
                 if (msg.key.fromMe) continue
                 const jid = msg.key.remoteJid || ''
                 const text = extractText(msg) || ''
-                if (!text && !msg.message?.imageMessage) continue
+                // Text, image or document — anything else (sticker, audio,
+                // reaction) is still ignored.
+                if (!text && !mediaOf(msg)) continue
 
                 const sender = await resolveSender(msg.key, sock.signalRepository?.lidMapping,
                     m => console.error(`[${account}] ${m}`))
@@ -179,7 +181,7 @@ export function createGateway({ config, log, notify, onMessage }: GatewayOptions
     }
 }
 
-export const downloadImage = (msg: WAMessage): Promise<Buffer> =>
+export const downloadMedia = (msg: WAMessage): Promise<Buffer> =>
     downloadMediaMessage(msg, 'buffer', {}) as Promise<Buffer>
 
-export { saveIncomingImage }
+export { mediaOf, saveIncomingMedia }

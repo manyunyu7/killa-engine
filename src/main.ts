@@ -25,7 +25,7 @@ import { jsonFile } from './store/json-file.ts'
 import { createSessionStore } from './store/sessions.ts'
 import { createModelStore } from './store/models.ts'
 import { createReminderStore, type ReminderFile } from './store/reminders.ts'
-import { createGateway, downloadImage, saveIncomingImage } from './whatsapp/connection.ts'
+import { createGateway, downloadMedia, mediaOf, saveIncomingMedia } from './whatsapp/connection.ts'
 import { extractText } from './whatsapp/inbound.ts'
 import type { ChatSession } from './types.ts'
 import type { Deps } from './core/ports.ts'
@@ -91,12 +91,15 @@ const gateway = createGateway({
     notify: notifyTelegram,
     onMessage: async (chat, msg) => {
         const text = extractText(msg)
-        const hasImage = !!msg.message?.imageMessage
-        const imagePath = hasImage
-            ? await saveIncomingImage(msg, config.mediaDir, downloadImage,
+        const media = mediaOf(msg)
+        const saved = media
+            ? await saveIncomingMedia(media, config.mediaDir, downloadMedia,
                 m => console.error(`[${chat.account}] ${m}`))
             : null
-        await dispatch(chat, { text, hasImage, imagePath }, deps)
+        const file = media && saved
+            ? { path: saved, kind: media.kind, name: media.name || 'gambar' }
+            : null
+        await dispatch(chat, { text, hasFile: !!media, file }, deps)
     },
 })
 

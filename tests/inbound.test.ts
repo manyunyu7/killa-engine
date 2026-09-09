@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { WAMessage } from 'baileys'
-import { extractText, imageExtension, isGroup, resolveSender, saveIncomingImage } from '../src/whatsapp/inbound.ts'
+import { extractText, imageExtension, isGroup, mediaOf, resolveSender, safeName, saveIncomingMedia } from '../src/whatsapp/inbound.ts'
 
 describe('resolveSender in groups', () => {
     it('reads the person, not the group', async () => {
@@ -98,13 +98,55 @@ describe('imageExtension', () => {
     })
 })
 
-describe('saveIncomingImage', () => {
-    const imageMsg = { message: { imageMessage: { mimetype: 'image/png' } } } as WAMessage
+describe('mediaOf', () => {
+    it('finds a bare image', () => {
+        expect(mediaOf({ message: { imageMessage: { mimetype: 'image/png' } } } as WAMessage)?.kind).toBe('image')
+    })
+
+    it('finds a bare document and keeps its name', () => {
+        const got = mediaOf({ message: { documentMessage: { fileName: 'makalah.docx' } } } as WAMessage)
+        expect(got?.kind).toBe('document')
+        expect(got?.name).toBe('makalah.docx')
+    })
+
+    it('unwraps a document sent with a caption', () => {
+        // This is the shape WhatsApp uses when the user types a caption, and
+        // the one that used to be dropped silently.
+        const inner = { documentMessage: { fileName: 'laprak.pdf', mimetype: 'application/pdf' } }
+        const got = mediaOf({ message: { documentWithCaptionMessage: { message: inner } } } as WAMessage)
+        expect(got?.kind).toBe('document')
+        expect(got?.name).toBe('laprak.pdf')
+        // the node handed to the downloader must be the inner one
+        expect(got?.msg.message).toBe(inner)
+    })
+
+    it('ignores everything else', () => {
+        expect(mediaOf({ message: { conversation: 'halo' } } as WAMessage)).toBeNull()
+        expect(mediaOf({} as WAMessage)).toBeNull()
+    })
+})
+
+describe('safeName', () => {
+    it('keeps a normal filename', () => {
+        expect(safeName('Laporan Praktikum RJP.docx')).toBe('Laporan Praktikum RJP.docx')
+    })
+
+    it('refuses to escape the media directory', () => {
+        expect(safeName('../../etc/passwd')).toBe('passwd')
+        expect(safeName('/abs/path.docx')).toBe('path.docx')
+        expect(safeName('..')).toBe('dokumen')
+        expect(safeName('')).toBe('dokumen')
+    })
+})
+
+describe('saveIncomingMedia', () => {
+    const imageMsg = { kind: 'image' as const, name: '', mimetype: 'image/png',
+        msg: { message: { imageMessage: { mimetype: 'image/png' } } } as WAMessage }
     const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'killa-media-'))
 
     it('writes the download and returns its path', async () => {
         const dir = tmp()
-        const file = await saveIncomingImage(imageMsg, dir, async () => Buffer.from('png-bytes'),
+        const file = await saveIncomingMedia(imageMsg, dir, async () => Buffer.from('png-bytes'),
             undefined, () => 12345)
         expect(file).toBe(path.join(dir, 'in-12345.png'))
         expect(fs.readFileSync(file!, 'utf8')).toBe('png-bytes')
@@ -112,18 +154,20 @@ describe('saveIncomingImage', () => {
 
     it('creates the media directory if it is missing', async () => {
         const dir = path.join(tmp(), 'nested')
-        expect(await saveIncomingImage(imageMsg, dir, async () => Buffer.from('x'), undefined, () => 1)).toBeTruthy()
+        expect(await saveIncomingMedia(imageMsg, dir, async () => Buffer.from('x'), undefined, () => 1)).toBeTruthy()
     })
 
-    it('returns null for a message with no image', async () => {
-        const download = vi.fn()
-        expect(await saveIncomingImage({ message: { conversation: 'halo' } } as WAMessage, tmp(), download)).toBeNull()
-        expect(download).not.toHaveBeenCalled()
+    it('writes a document under its own name', async () => {
+        const dir = tmp()
+        const doc = { kind: 'document' as const, name: 'makalah.docx', mimetype: 'application/msword',
+            msg: {} as WAMessage }
+        const file = await saveIncomingMedia(doc, dir, async () => Buffer.from('docx'), undefined, () => 7)
+        expect(file).toBe(path.join(dir, 'in-7-makalah.docx'))
     })
 
     it('reports a failed download and returns null instead of throwing', async () => {
         const onError = vi.fn()
-        const file = await saveIncomingImage(imageMsg, tmp(),
+        const file = await saveIncomingMedia(imageMsg, tmp(),
             async () => { throw new Error('media expired') }, onError)
         expect(file).toBeNull()
         expect(onError).toHaveBeenCalledWith(expect.stringContaining('media expired'))

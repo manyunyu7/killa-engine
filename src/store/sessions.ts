@@ -24,6 +24,13 @@ export interface SessionStore {
 export function createSessionStore(file: JsonFile<Record<string, ChatSession>>, idleMs: number,
                                    now: () => number = Date.now): SessionStore {
     const sessions = file.read()
+    // Entries written before turns/startedAt/chat existed: keep them
+    // resumable, but a flush needs a chat to know where to run, so an
+    // entry without one is dropped at flush time rather than thrown on.
+    for (const s of Object.values(sessions)) {
+        s.turns ??= 0
+        s.startedAt ??= s.lastAt
+    }
     const isStale = (s: ChatSession) => now() - s.lastAt > idleMs
 
     return {

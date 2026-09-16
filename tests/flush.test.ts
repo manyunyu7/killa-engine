@@ -33,6 +33,13 @@ describe('flushSession', () => {
         expect(deps.runAgent).not.toHaveBeenCalled()
     })
 
+    it('drops a pre-upgrade session that has no chat instead of throwing', async () => {
+        const deps = makeDeps()
+        const legacy = { sessionId: 'old', lastAt: 0 } as unknown as ChatSession
+        expect(await flushSession(legacy, deps)).toBe('skipped-legacy')
+        expect(deps.runAgent).not.toHaveBeenCalled()
+    })
+
     it('is off entirely when MEMORY_FLUSH_MODEL=off', async () => {
         const deps = makeDeps({ config: testConfig({ flushModel: null }) })
         expect(await flushSession(session(), deps)).toBe('skipped-off')

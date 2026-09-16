@@ -24,22 +24,22 @@ export const FLUSH_PROMPT =
     + 'Kalau tidak ada yang layak disimpan, jangan tulis apa-apa. Jangan balas ke user; '
     + 'cukup jawab satu baris: apa yang kamu simpan, atau "tidak ada".]'
 
-export type FlushOutcome = 'flushed' | 'skipped-short' | 'skipped-touched' | 'skipped-off'
+export type FlushOutcome = 'flushed' | 'skipped-short' | 'skipped-touched' | 'skipped-off' | 'skipped-legacy'
 
 /**
  * Flush one session. The caller has already dropped it from the store; this
  * only decides whether a run is worth it and, if so, makes it.
  */
 export async function flushSession(s: ChatSession, deps: Deps): Promise<FlushOutcome> {
-    const { chat } = s
     const outcome = await decide(s, deps)
-    deps.log(chat.account, `flush ${chat.number}: ${outcome} (${s.turns} giliran)`)
+    deps.log(s.chat?.account ?? '?', `flush ${s.chat?.number ?? s.sessionId}: ${outcome} (${s.turns ?? 0} giliran)`)
     return outcome
 }
 
 async function decide(s: ChatSession, deps: Deps): Promise<FlushOutcome> {
     const { config } = deps
     if (!config.flushModel) return 'skipped-off'
+    if (!s.chat?.jid) return 'skipped-legacy'
     if (s.turns < config.flushMinTurns) return 'skipped-short'
     const { workspace, runAs } = targetFor(config, s.chat)
     if (deps.memoryTouchedSince(workspace, s.startedAt)) return 'skipped-touched'

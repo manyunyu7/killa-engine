@@ -81,8 +81,9 @@ For headless servers, authenticate the `claude` CLI with a long-lived token crea
 - [ ] Pairing gate for unknown senders (approval codes instead of a static whitelist)
 - [x] Media in/out (images) — voice notes still open
 - [x] Scheduled reminders (owner-only, capped, see docs/configuration.md)
+- [x] Memory across sessions: timestamps, new-session briefing, end-of-session flush (docs/architecture.md)
 - [ ] Scheduled/proactive runs (cron → agent; outbound via a non-WhatsApp channel to respect reply-only)
-- [ ] Group chat support with explicit mention gating
+- [x] Group chat support with explicit mention gating
 - [ ] Telegram as a second surface
 
 ## License

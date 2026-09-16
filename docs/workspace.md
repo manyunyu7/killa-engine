@@ -42,12 +42,18 @@ Things that earn their place:
 
 Two layers, different lifetimes:
 
-1. **Claude session** (short-term) — each chat resumes a session, so the agent remembers the conversation. After `SESSION_IDLE_MINUTES` of silence (or `/new`) it starts fresh and remembers *nothing* from the session itself.
-2. **Workspace files** (long-term) — whatever the agent wrote to `MEMORY.md`/`USER.md` survives forever and is re-read on every run.
+1. **Claude session** (short-term) — each chat resumes a session, so the agent remembers the conversation. After `SESSION_IDLE_MINUTES` of silence (or `/new`) it starts fresh.
+2. **Workspace files** (long-term) — whatever the agent wrote to `MEMORY.md`, `memory/YYYY-MM-DD.md`, `USER.md` survives forever.
 
-The gap between them is real: if something mattered and the agent didn't write it down, it's gone when the session expires. That's why `CLAUDE.md` must be explicit about writing things down — and why it's worth occasionally asking "update your memory files with what we discussed."
+The engine bridges the seam three ways ([architecture.md](architecture.md#memory-across-sessions)): every message carries a timestamp, a fresh session is briefed with the last lines of the old one, and an expiring session gets one cheap turn to write memory before it is forgotten. The starter `CLAUDE.md` tells the agent what those engine notes mean — keep that section if you write your own.
 
-Prune `MEMORY.md` yourself now and then. Everything in it is loaded into context on every single run; a 200KB memory file makes every reply slower and dumber.
+What the engine cannot do is decide *what* is worth keeping. So `CLAUDE.md` still has to say where things go, and it pays to keep the split the starter uses:
+
+- `memory/YYYY-MM-DD.md` — what happened today, written as it happens.
+- `MEMORY.md` — lasting facts only, read at the start of every session. Keep it small: under ~15 KB. A 150 KB `MEMORY.md` is not memory, it is a file the agent stops reading.
+- `USER.md`, `people/`, `health/`… — topic files, read when the topic comes up, not every turn.
+
+Avoid "read these nine files before every reply". The agent will not (it is 60k tokens), and once it has learned to ignore one instruction it ignores the next.
 
 ## Migrating from OpenClaw
 

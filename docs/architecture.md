@@ -54,6 +54,16 @@ Where OpenClaw and Hermes reimplement sessions, tool loops, memory, and skills o
 
 Long-term memory does **not** live here — it lives in the workspace files the agent itself writes. See [workspace.md](workspace.md).
 
+## Memory across sessions
+
+The seam between two Claude sessions is where a chat agent forgets. Three engine-side measures close it, none of which cost a model call on the normal path:
+
+- **Every prompt is timestamped** (`[Rab 16 Sep 2026, 19:05 WIB] …`), so "tadi", "besok" and "jam 7" resolve without the agent shelling out to `date`.
+- **A fresh session is briefed.** `state/chat-transcripts.json` keeps the last 20 lines per chat (240 chars each). The first prompt of a new session carries them, plus an instruction to read the workspace memory files before answering. The user never sees a "sesi baru" seam.
+- **An expiring session is flushed.** From inside a session there is no such thing as "the end", which is why agents write memory only when the user visibly reports something. The engine knows: when a session passes the idle window (checked on a timer) or the user sends `/new`, it gets one last turn — on `MEMORY_FLUSH_MODEL`, the cheapest one — asking it to write what mattered to the workspace. Skipped for short sessions and when memory files already changed during it. Flushes go through the chat's queue, so they never overlap a live turn; a chat that comes back before the timer got to it flushes the leftover session alongside the new turn.
+
+The per-turn log line includes the CLI's `num_turns`: a `1 turn (tanpa tool)` reply answered without reading anything, which is the thing to watch when the agent "forgets".
+
 ## WhatsApp layer: inherited scar tissue
 
 The Baileys handling is forked from a production OTP listener (168Railway's wa-listener) and keeps its hard-won invariants:

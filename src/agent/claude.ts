@@ -72,9 +72,10 @@ export function createClaude({ bin = process.env.CLAUDE_BIN || 'claude',
 
             child.on('close', (code: number | null) => {
                 try {
-                    const parsed = JSON.parse(out) as { result?: string; session_id?: string }
+                    const parsed = JSON.parse(out) as { result?: string; session_id?: string; num_turns?: number }
                     const reply = (parsed.result ?? '').trim()
-                    finish({ reply: reply || EMPTY_REPLY, sessionId: parsed.session_id ?? sessionId })
+                    finish({ reply: reply || EMPTY_REPLY, sessionId: parsed.session_id ?? sessionId,
+                             ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}) })
                 } catch {
                     // A dead --resume target is the common failure here; null
                     // the session so the next message starts fresh.

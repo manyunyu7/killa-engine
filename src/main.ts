@@ -23,6 +23,9 @@ import { createQueue } from './core/queue.ts'
 import { dispatch } from './core/dispatch.ts'
 import { jsonFile } from './store/json-file.ts'
 import { createSessionStore } from './store/sessions.ts'
+import { createTranscriptStore, type Line } from './store/transcript.ts'
+import { flushStale } from './core/flush.ts'
+import { memoryTouchedSince } from './core/memory-files.ts'
 import { createModelStore } from './store/models.ts'
 import { createReminderStore, type ReminderFile } from './store/reminders.ts'
 import { createGateway, downloadMedia, mediaOf, saveIncomingMedia } from './whatsapp/connection.ts'
@@ -67,6 +70,8 @@ const claude = createClaude()
 const sessions = createSessionStore(
     jsonFile<Record<string, ChatSession>>(path.join(config.stateDir, 'chat-sessions.json'), () => ({})),
     config.sessionIdleMs)
+const transcripts = createTranscriptStore(
+    jsonFile<Record<string, Line[]>>(path.join(config.stateDir, 'chat-transcripts.json'), () => ({})))
 const models = createModelStore(
     jsonFile<Record<string, string>>(path.join(config.stateDir, 'chat-models.json'), () => ({})))
 const reminders = createReminderStore({
@@ -76,15 +81,23 @@ const reminders = createReminderStore({
 })
 
 const deps: Deps = {
-    config, sessions, models, reminders,
+    config, sessions, transcripts, models, reminders,
     queue: createQueue((key, e) => console.error(`[queue ${key}]`, e.message)),
     modelAliases: discoverAliases(() =>
         execSync(`${process.env.CLAUDE_BIN || 'claude'} --help`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString()),
     runAgent: claude.runAgent,
     probeModel: claude.probeModel,
     fileExists: fs.existsSync,
+    memoryTouchedSince,
+    now: Date.now,
     log,
 }
+
+// Sessions past the idle window get one last turn to write memory, then are
+// forgotten. Checked on the reminder cadence: a flush a minute late is fine.
+setInterval(() => {
+    flushStale(deps).catch((e: Error) => console.error('flush:', e.message))
+}, config.reminderTickMs)
 
 const gateway = createGateway({
     config, log,

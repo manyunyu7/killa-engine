@@ -9,6 +9,7 @@ import type { AgentResult, AgentRun, Config, ProbeResult, Reminder } from '../ty
 import type { ModelStore } from '../store/models.ts'
 import type { ReminderStore } from '../store/reminders.ts'
 import type { SessionStore } from '../store/sessions.ts'
+import type { TranscriptStore } from '../store/transcript.ts'
 import type { Queue } from './queue.ts'
 
 /** One conversation, already resolved to an owner. */
@@ -35,6 +36,7 @@ export interface Incoming {
 export interface Deps {
     config: Config
     sessions: SessionStore
+    transcripts: TranscriptStore
     models: ModelStore
     reminders: ReminderStore
     queue: Queue
@@ -42,6 +44,9 @@ export interface Deps {
     runAgent(run: AgentRun): Promise<AgentResult>
     probeModel(model: string, workspace: string): Promise<ProbeResult>
     fileExists(file: string): boolean
+    /** True if any markdown under the workspace changed after `since` — the agent already wrote memory. */
+    memoryTouchedSince(workspace: string, since: number): boolean
+    now(): number
     log(account: string, message: string): void
 }
 

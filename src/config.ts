@@ -142,7 +142,13 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         sessionDir: env.SESSION_DIR || path.join(root, 'sessions'),
         stateDir,
         mediaDir: path.join(stateDir, 'media'),
-        sessionIdleMs: num(env.SESSION_IDLE_MINUTES, 30) * 60_000,
+        sessionIdleMs: num(env.SESSION_IDLE_MINUTES, 180) * 60_000,
+        // The flush is the one extra run the engine adds per conversation, so
+        // it defaults to the cheapest model: it only has to write down what
+        // the session already knows.
+        flushModel: (env.MEMORY_FLUSH_MODEL ?? 'haiku').trim().toLowerCase() === 'off'
+            ? null : (env.MEMORY_FLUSH_MODEL ?? 'haiku').trim(),
+        flushMinTurns: num(env.MEMORY_FLUSH_MIN_TURNS, 4),
         agentTimeoutMs: num(env.AGENT_TIMEOUT_SECONDS, 300) * 1000,
         reminderTickMs: num(env.REMINDER_TICK_SECONDS, 30) * 1000,
         remindersMaxPerDay: num(env.REMINDERS_MAX_PER_DAY, 20),
@@ -212,4 +218,14 @@ export function forAccountConfig(config: Config, account: string):
 export function workspaceFor(config: Config, account: string, number: string): string {
     const { workspaceDir, contactWorkspaces } = forAccountConfig(config, account)
     return contactWorkspaces[number.replace(/\D/g, '')] || workspaceDir
+}
+
+/** Where a chat's agent runs: a routed group brings its own workspace and OS user. */
+export function targetFor(config: Config, chat: { account: string; jid: string; number: string }):
+        { workspace: string; runAs: string | null } {
+    const route = routeForChat(config, chat.jid)
+    return {
+        workspace: route?.workspaceDir ?? workspaceFor(config, chat.account, chat.number),
+        runAs: route?.runAs ?? null,
+    }
 }

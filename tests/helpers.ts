@@ -6,6 +6,7 @@ import type { Chat, Deps } from '../src/core/ports.ts'
 import type { Config } from '../src/types.ts'
 import { createQueue } from '../src/core/queue.ts'
 import { createSessionStore } from '../src/store/sessions.ts'
+import { createTranscriptStore, type Line } from '../src/store/transcript.ts'
 import { createModelStore } from '../src/store/models.ts'
 import { createReminderStore, type ReminderFile } from '../src/store/reminders.ts'
 
@@ -34,6 +35,8 @@ export const testConfig = (over: Partial<Config> = {}): Config => ({
     stateDir: '/root/state',
     mediaDir: '/root/state/media',
     sessionIdleMs: 30 * 60_000,
+    flushModel: 'haiku',
+    flushMinTurns: 4,
     agentTimeoutMs: 300_000,
     reminderTickMs: 30_000,
     remindersMaxPerDay: 20,
@@ -72,6 +75,7 @@ export function makeDeps(over: Partial<Deps> = {}): Deps {
     return {
         config,
         sessions: createSessionStore(memFile<Record<string, never>>({} as never), config.sessionIdleMs),
+        transcripts: createTranscriptStore(memFile<Record<string, Line[]>>({})),
         models: createModelStore(memFile<Record<string, string>>({})),
         reminders: createReminderStore({ file: memFile<ReminderFile>({ seq: 0, items: [] }), log: () => {} }),
         queue: createQueue(),
@@ -79,6 +83,8 @@ export function makeDeps(over: Partial<Deps> = {}): Deps {
         runAgent: vi.fn(async () => ({ reply: 'halo', sessionId: 'sess-1' })),
         probeModel: vi.fn(async () => ({ ok: true, message: '' })),
         fileExists: () => true,
+        memoryTouchedSince: () => false,
+        now: Date.now,
         log: () => {},
         ...over,
     }

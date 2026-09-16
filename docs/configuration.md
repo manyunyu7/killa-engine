@@ -46,10 +46,12 @@ A workspace you keep outside the root (a git repo, say) is fully supported — p
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SESSION_IDLE_MINUTES` | `30` | Silence longer than this starts a fresh Claude session (long-term memory in workspace files is unaffected). Raise for slow-burn conversations; lower for a more goldfish agent. `/new` in chat resets on demand. |
+| `SESSION_IDLE_MINUTES` | `180` | Silence longer than this starts a fresh Claude session. The new session is briefed with the last few lines of the old one (see [architecture.md](architecture.md#memory-across-sessions)), and the old one gets a memory flush first. Long on purpose: resuming a session hits the prompt cache, starting over re-reads every memory file. `/new` in chat resets on demand. |
+| `MEMORY_FLUSH_MODEL` | `haiku` | Model for the end-of-session flush: one extra turn on the expiring session asking it to write down what mattered. It only has to write, the thinking already happened, so the cheapest model is right. `off` disables the flush entirely. |
+| `MEMORY_FLUSH_MIN_TURNS` | `4` | A session with fewer user turns is dropped without a flush. The flush is also skipped when a memory file in the workspace (root or `memory/`) already changed during the session — the agent wrote things down on its own. |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard cap per agent run; on expiry the child is killed and the chat gets a "took too long" reply. Big multi-step tasks may need more. |
 | `CLAUDE_BIN` | `claude` | Path to the CLI if not on the service user's PATH (typical under pm2 + nvm: `/home/killa/.nvm/versions/node/v22.x.x/bin/claude`). |
-| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map). Deleting it forgets which session each chat was in — harmless beyond that. |
+| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map) and `chat-transcripts.json` (the last 20 lines per chat, for briefing a fresh session). Deleting it forgets which session each chat was in and what was last said — harmless beyond that. |
 
 ## Reminders
 
@@ -72,7 +74,7 @@ This is the one place the engine sends without being spoken to first, so it is f
 
 | Command | Effect |
 |---|---|
-| `/new` | Forget the current conversation and start a fresh Claude session. |
+| `/new` | Flush memory for the current session, then forget it and start fresh. Queued behind a running turn, so it can't be undone by that turn finishing. |
 | `/model` | Show the active model for this chat. |
 | `/model fable\|opus\|sonnet\|haiku` | Switch model for this chat (sticks across session resets). |
 | `/model default` | Back to the CLI default. |

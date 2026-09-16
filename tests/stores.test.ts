@@ -6,6 +6,7 @@ import { jsonFile } from '../src/store/json-file.ts'
 import { createSessionStore } from '../src/store/sessions.ts'
 import { createModelStore } from '../src/store/models.ts'
 import { memFile } from './helpers.ts'
+import type { ChatSession } from '../src/types.ts'
 
 describe('jsonFile', () => {
     const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'killa-'))
@@ -88,7 +89,7 @@ describe('createSessionStore', () => {
     })
 
     it('survives a restart by reloading the file', () => {
-        const file = memFile<Record<string, { sessionId: string; lastAt: number }>>({})
+        const file = memFile<Record<string, ChatSession>>({})
         createSessionStore(file, idle).remember('628111', 'sess-1')
         expect(createSessionStore(file, idle).get('628111')).toBe('sess-1')
     })

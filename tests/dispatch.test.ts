@@ -1,21 +1,49 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildPrompt, chatKey, deliver, dispatch, elevatedEnvFor, NO_REMINDERS } from '../src/core/dispatch.ts'
 import { fakeChat, flush, makeDeps, testConfig } from './helpers.ts'
+import type { Deps } from '../src/core/ports.ts'
 
 const DM_KEY = '628111@s.whatsapp.net#628111'
 beforeAll(() => { process.env.TZ = 'Asia/Jakarta' })
 
 const msg = (text: string) => ({ text, hasFile: false, file: null })
+const CHAT = { account: 'main', jid: '628111@s.whatsapp.net', number: '628111' }
+const ctx = { now: 0, briefing: [] }
 
 describe('slash commands', () => {
     it('/new clears the session and says so', async () => {
         const deps = makeDeps()
-        deps.sessions.remember(DM_KEY, 'sess-1')
+        deps.sessions.remember(DM_KEY, 'sess-1', CHAT)
         const chat = fakeChat()
 
         expect(await dispatch(chat, msg('/new'), deps)).toBe(true)
+        await flush()
         expect(deps.sessions.get(DM_KEY)).toBeNull()
         expect(chat.texts[0]).toContain('sesi baru')
+    })
+
+    it('/new waits for a running turn, so the turn cannot resurrect the session', async () => {
+        let release!: () => void
+        const runAgent: Deps['runAgent'] = () => new Promise(r => { release = () => r({ reply: 'ok', sessionId: 'sess-1' }) })
+        const deps = makeDeps({ runAgent: vi.fn(runAgent) })
+        const chat = fakeChat()
+
+        await dispatch(chat, msg('halo'), deps)
+        await flush()
+        await dispatch(chat, msg('/new'), deps)
+        release()
+        await flush(); await flush()
+
+        expect(chat.texts).toEqual(['ok', expect.stringContaining('sesi baru')])
+        expect(deps.sessions.get(DM_KEY)).toBeNull()
+    })
+
+    it('/new flushes a session worth flushing before dropping it', async () => {
+        const deps = makeDeps()
+        for (let i = 0; i < 4; i++) deps.sessions.remember(DM_KEY, 'sess-1', CHAT)
+        await dispatch(fakeChat(), msg('/new'), deps)
+        await flush()
+        expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess-1', model: 'haiku' }))
     })
 
     it('/reminders lists nothing helpfully when empty', async () => {
@@ -111,7 +139,7 @@ describe('agent turn', () => {
         await flush()
 
         expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({
-            text: 'halo', sessionId: null, workspace: '/ws', timeoutMs: 300_000,
+            text: expect.stringMatching(/^\[.+WIB\] halo$/), sessionId: null, workspace: '/ws', timeoutMs: 300_000,
         }))
         expect(chat.texts).toEqual(['halo'])
         expect(deps.sessions.get(DM_KEY)).toBe('sess-1')
@@ -165,7 +193,8 @@ describe('agent turn', () => {
     it('serializes turns per chat', async () => {
         const order: string[] = []
         const deps = makeDeps({
-            runAgent: vi.fn(async ({ text }) => {
+            runAgent: vi.fn(async ({ text: stamped }) => {
+                const text = stamped.replace(/^\[.*?\] /, '')
                 order.push(`start:${text}`)
                 await new Promise(r => setTimeout(r, 5))
                 order.push(`end:${text}`)
@@ -192,28 +221,39 @@ describe('agent turn', () => {
 })
 
 describe('buildPrompt', () => {
-    it('passes plain text through', () => {
-        expect(buildPrompt(msg('halo'))).toBe('halo')
+    it('stamps the time in front of plain text', () => {
+        expect(buildPrompt(msg('halo'), { now: Date.UTC(2026, 8, 16, 12, 5), briefing: [] })).toBe('[Rab 16 Sep 2026, 19:05 WIB] halo')
+    })
+
+    it('briefs a fresh session with the recent lines, in order, then the message', () => {
+        const p = buildPrompt(msg('lanjut'), { now: 0, briefing: [
+            { at: Date.UTC(2026, 8, 16, 11, 0), who: 'user', text: 'aku mau resign' },
+            { at: Date.UTC(2026, 8, 16, 11, 1), who: 'agent', text: 'serius sayanggg?' },
+        ] })
+        expect(p).toContain('sesi baru')
+        expect(p).toContain('baca file memori')
+        expect(p.indexOf('User: aku mau resign')).toBeLessThan(p.indexOf('Kamu: serius sayanggg?'))
+        expect(p.endsWith('] lanjut')).toBe(true)
     })
 
     it('tells the agent where a downloaded image is', () => {
-        const p = buildPrompt({ text: 'lucu kan', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } })
+        const p = buildPrompt({ text: 'lucu kan', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } }, ctx)
         expect(p).toContain('lucu kan')
         expect(p).toContain('/tmp/a.jpg')
     })
 
     it('marks a captionless image', () => {
-        expect(buildPrompt({ text: '', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } })).toContain('(tanpa caption)')
+        expect(buildPrompt({ text: '', hasFile: true, file: { path: '/tmp/a.jpg', kind: 'image' as const, name: 'gambar' } }, ctx)).toContain('(tanpa caption)')
     })
 
     it('admits a failed download instead of pretending', () => {
-        expect(buildPrompt({ text: 'nih', hasFile: true, file: null })).toContain('gagal diunduh')
+        expect(buildPrompt({ text: 'nih', hasFile: true, file: null }, ctx)).toContain('gagal diunduh')
     })
 
     it('tells the agent to READ a document, and how', () => {
         // Without the pandoc hint the agent asks the user to retype the file.
         const p = buildPrompt({ text: 'ini makalahnya',
-            hasFile: true, file: { path: '/tmp/in-1-makalah.docx', kind: 'document', name: 'makalah.docx' } })
+            hasFile: true, file: { path: '/tmp/in-1-makalah.docx', kind: 'document', name: 'makalah.docx' } }, ctx)
         expect(p).toContain('makalah.docx')
         expect(p).toContain('/tmp/in-1-makalah.docx')
         expect(p).toContain('BACA ISINYA')

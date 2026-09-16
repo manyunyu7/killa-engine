@@ -12,7 +12,7 @@ describe('parseConfig', () => {
         expect(config.sessionDir).toBe('/root/sessions')
         expect(config.stateDir).toBe('/root/state')
         expect(config.mediaDir).toBe('/root/state/media')
-        expect(config.sessionIdleMs).toBe(30 * 60_000)
+        expect(config.sessionIdleMs).toBe(180 * 60_000)
         expect(config.agentTimeoutMs).toBe(300_000)
         expect(config.remindersMaxPerDay).toBe(20)
         expect(config.telegram).toBeNull()
@@ -36,9 +36,9 @@ describe('parseConfig', () => {
     })
 
     it.each([
-        ['SESSION_IDLE_MINUTES', 'abc', 'sessionIdleMs', 30 * 60_000],
-        ['SESSION_IDLE_MINUTES', '0', 'sessionIdleMs', 30 * 60_000],
-        ['SESSION_IDLE_MINUTES', '-5', 'sessionIdleMs', 30 * 60_000],
+        ['SESSION_IDLE_MINUTES', 'abc', 'sessionIdleMs', 180 * 60_000],
+        ['SESSION_IDLE_MINUTES', '0', 'sessionIdleMs', 180 * 60_000],
+        ['SESSION_IDLE_MINUTES', '-5', 'sessionIdleMs', 180 * 60_000],
         ['AGENT_TIMEOUT_SECONDS', '', 'agentTimeoutMs', 300_000],
         ['REMINDERS_MAX_PER_DAY', 'x', 'remindersMaxPerDay', 20],
     ])('falls back when %s is %s', (key, value, field, expected) => {

@@ -31,11 +31,19 @@ export interface NewReminder {
 export interface ChatSession {
     sessionId: string
     lastAt: number
+    /** When this session id was first seen, so a flush can tell "how much happened here". */
+    startedAt: number
+    /** User turns run against this session id. */
+    turns: number
+    /** Enough to rebuild the workspace and OS user for a flush after the chat went quiet. */
+    chat: { account: string; jid: string; number: string }
 }
 
 export interface AgentResult {
     reply: string
     sessionId: string | null
+    /** Agent loop iterations reported by the CLI — 1 means it answered without a single tool call. */
+    turns?: number
 }
 
 export interface AgentRun {
@@ -93,6 +101,10 @@ export interface Config {
     stateDir: string
     mediaDir: string
     sessionIdleMs: number
+    /** Model for the end-of-session memory flush; null disables the flush. */
+    flushModel: string | null
+    /** A session with fewer user turns than this is not worth a flush run. */
+    flushMinTurns: number
     agentTimeoutMs: number
     reminderTickMs: number
     remindersMaxPerDay: number

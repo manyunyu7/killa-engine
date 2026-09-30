@@ -9,7 +9,7 @@
  */
 
 import { dmJid, forAccountConfig, HTTP_JID_PREFIX } from '../config.ts'
-import { chatKey, dispatch } from '../core/dispatch.ts'
+import { chatKey, chooseModel, dispatch, modelOptions, type ModelChoice } from '../core/dispatch.ts'
 import type { Chat, Deps, IncomingFile } from '../core/ports.ts'
 import type { Config, HttpConfig, Reminder } from '../types.ts'
 import type { Line } from '../store/transcript.ts'
@@ -143,6 +143,19 @@ export interface ReminderView { id: number; spec: string; text: string; nextAt: 
 export function httpReminders(http: HttpConfig, deps: Deps, key: string): ReminderView[] {
     const { number } = chatIdentity(deps.config, http, key)
     return deps.reminders.list(number).map(({ id, spec, text, nextAt }: Reminder) => ({ id, spec, text, nextAt }))
+}
+
+export interface ModelView { model: string | null; options: string[] }
+
+/** The chat's persisted model (null = default) and what /model accepts by name. */
+export function httpModel(http: HttpConfig, deps: Deps, key: string): ModelView {
+    return { model: deps.models.get(chatKey(chatIdentity(deps.config, http, key))) ?? null,
+             options: modelOptions(deps) }
+}
+
+/** Same as /model <name>: `default` clears, anything else is probed by claude before it is saved. */
+export function setHttpModel(http: HttpConfig, deps: Deps, key: string, name: string): Promise<ModelChoice> {
+    return chooseModel(collectingChat(http, chatIdentity(deps.config, http, key)), name, deps)
 }
 
 /** Same as /cancel <id>. False when that chat has no such reminder. */

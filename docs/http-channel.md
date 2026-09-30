@@ -102,6 +102,26 @@ Same as `/cancel <id>`.
 
 `200 {"ok": true}` when cancelled, `200 {"ok": false}` when that chat has no reminder with that id (already fired, cancelled, or another chat's — a chatKey can never cancel someone else's). `id` must be a positive integer (`400`).
 
+### `GET /v1/model?chatKey=<key>`
+
+The chat's saved model choice (the same one `/model` shows and sets) and the names `/model` offers.
+
+```json
+{ "model": "opus", "options": ["default", "fable", "opus", "sonnet", "haiku"] }
+```
+
+`model` is `null` when the chat uses the default. `options` is `default` plus the aliases discovered from this machine's `claude --help` (falls back to `fable, opus, sonnet, haiku`). It is a suggestion list, not the full set: any full model id is accepted too. For a `wa:<number>` key this is the WhatsApp DM's choice.
+
+### `POST /v1/model`
+
+Same as `/model <name>`. Persists across `/new`, and applies to every later turn of that chat (a `model` on `POST /v1/chat` still overrides it for one turn).
+
+```json
+{ "chatKey": "user-42", "model": "sonnet" }
+```
+
+`200 {"ok": true, "model": "sonnet"}`. The name is lowercased. `"default"` clears the choice and returns `{"ok": true, "model": null}` without asking Claude. Any other name (alias or full id such as `claude-opus-5-5[1m]`) is saved only after a quick probe run of `claude --model <name>` succeeds, so the call can take a few seconds (up to 60 s). A rejected name is `400 {"error": "<claude's message>"}` and the old choice stays. `model` must be 1–100 chars of `[A-Za-z0-9._[]-]` (`400 model tidak valid`).
+
 ### `GET /v1/media?path=<path>`
 
 Stream a file the agent produced — typically a path from `attachments` — so Ghina can render it inline. Response is the raw file with `Content-Type` from its extension (images, pdf, office, text with `charset=utf-8`, audio; anything else, `.html`/`.svg` included, is `application/octet-stream`), `Content-Length`, and `X-Content-Type-Options: nosniff`.

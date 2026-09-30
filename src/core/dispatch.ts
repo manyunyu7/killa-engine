@@ -67,29 +67,43 @@ async function cmdCancel(chat: Chat, text: string, deps: Deps): Promise<void> {
         : `❌ Reminder #${Number.isInteger(id) ? id : '?'} tidak ketemu. Lihat /reminders.`)
 }
 
+/** The /model name that clears the per-chat choice. */
+export const DEFAULT_MODEL = 'default'
+
+/** What /model offers: `default` plus the aliases this claude install knows. */
+export const modelOptions = (deps: Deps): string[] => [DEFAULT_MODEL, ...deps.modelAliases]
+
+export type ModelChoice = { ok: true; model: string | null } | { ok: false; message: string }
+
+/**
+ * /model <name>: `default` clears the choice; any other name (alias or full
+ * id) is saved only if claude accepts it — claude is the validator.
+ */
+export async function chooseModel(chat: Chat, name: string, deps: Deps): Promise<ModelChoice> {
+    const arg = name.toLowerCase()
+    if (arg === DEFAULT_MODEL) {
+        deps.models.set(chatKey(chat), null)
+        return { ok: true, model: null }
+    }
+    const probe = await deps.probeModel(arg, targetFor(deps.config, chat).workspace)
+    if (!probe.ok) return { ok: false, message: probe.message || 'model ditolak claude' }
+    deps.models.set(chatKey(chat), arg)
+    return { ok: true, model: arg }
+}
+
 async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
     const arg = text.split(/\s+/)[1]?.toLowerCase()
 
     if (!arg) {
-        await chat.sendText(`🧠 Model sekarang: ${deps.models.get(chatKey(chat)) ?? 'default'}\n`
-            + `Ganti: /model ${deps.modelAliases.join(' | ')}\nBalik ke default: /model default`)
+        await chat.sendText(`🧠 Model sekarang: ${deps.models.get(chatKey(chat)) ?? DEFAULT_MODEL}\n`
+            + `Ganti: /model ${deps.modelAliases.join(' | ')}\nBalik ke default: /model ${DEFAULT_MODEL}`)
         return
     }
-    if (arg === 'default') {
-        deps.models.set(chatKey(chat), null)
-        await chat.sendText('🧠 Oke, balik ke model default.')
-        return
-    }
-
-    // Any name is allowed (aliases or full ids) — claude is the validator.
-    await chat.sendText(`⏳ Ngecek ${arg} ke Claude...`)
-    const probe = await deps.probeModel(arg, targetFor(deps.config, chat).workspace)
-    if (probe.ok) {
-        deps.models.set(chatKey(chat), arg)
-        await chat.sendText(`🧠 Oke, pakai ${arg} mulai pesan berikutnya.`)
-    } else {
-        await chat.sendText(`❌ ${probe.message || 'model ditolak claude'}`)
-    }
+    if (arg !== DEFAULT_MODEL) await chat.sendText(`⏳ Ngecek ${arg} ke Claude...`)
+    const choice = await chooseModel(chat, arg, deps)
+    if (!choice.ok) await chat.sendText(`❌ ${choice.message}`)
+    else if (choice.model === null) await chat.sendText('🧠 Oke, balik ke model default.')
+    else await chat.sendText(`🧠 Oke, pakai ${choice.model} mulai pesan berikutnya.`)
 }
 
 /** Every attachment a message carries, in order. */

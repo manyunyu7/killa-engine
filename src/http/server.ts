@@ -11,8 +11,8 @@ import fs from 'node:fs'
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn as nodeSpawn } from 'node:child_process'
-import { cancelHttpReminder, chatIdentity, ChatKeyForbidden, httpHistory, httpReminders, isChatKey, isModelName,
-         resetHttpChat, runHttpTurn } from './chat.ts'
+import { cancelHttpReminder, chatIdentity, ChatKeyForbidden, httpHistory, httpModel, httpReminders, isChatKey,
+         isModelName, resetHttpChat, runHttpTurn, setHttpModel } from './chat.ts'
 import { contentTypeFor, MAX_CHAT_BODY_BYTES, mediaRoots, parseMedia, resolveMedia, saveMedia } from './media.ts'
 import { summarizeUsage, windowStart } from '../core/usage.ts'
 import { DEFAULT_COMMIT_MESSAGE, deleteFile, gitCommit, gitLog, listDir, readFile, WorkspaceError,
@@ -140,6 +140,15 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpSer
             const key = keyOf(body.chatKey)
             if (!Number.isInteger(body.id) || (body.id as number) < 1) throw new HttpError(400, 'id harus bilangan bulat positif')
             return { ok: cancelHttpReminder(cfg, deps, key, body.id as number) }
+        },
+        'GET /v1/model': async (_req, url) => httpModel(cfg, deps, keyOf(url.searchParams.get('chatKey'))),
+        'POST /v1/model': async req => {
+            const body = await readJson(req)
+            const key = keyOf(body.chatKey)
+            if (!isModelName(body.model)) throw new HttpError(400, 'model tidak valid')
+            const choice = await setHttpModel(cfg, deps, key, body.model)
+            if (!choice.ok) throw new HttpError(400, choice.message)
+            return { ok: true, model: choice.model }
         },
         'GET /v1/usage': async (_req, url) => {
             const days = intParam(url.searchParams.get('days'), 7, MAX_USAGE_DAYS)

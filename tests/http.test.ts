@@ -823,6 +823,58 @@ describe('server', () => {
         expect((await call('GET', '/v1/reminders/cancel')).status).toBe(405)
     })
 
+    it('GET /v1/model and POST /v1/model: same store and rules as /model', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        const options = ['default', 'opus', 'sonnet']
+        expect(await call('GET', '/v1/model?chatKey=u1')).toEqual({ status: 200, json: { model: null, options } })
+        expect((await call('GET', '/v1/model')).status).toBe(400)
+
+        expect(await call('POST', '/v1/model', { chatKey: 'u1', model: 'Opus' }))
+            .toEqual({ status: 200, json: { ok: true, model: 'opus' } })
+        expect(deps.probeModel).toHaveBeenLastCalledWith('opus', '/ws-ghina')
+        expect(deps.models.get(httpStateKey('u1'))).toBe('opus')
+        expect(await call('GET', '/v1/model?chatKey=u1')).toEqual({ status: 200, json: { model: 'opus', options } })
+        expect((await call('GET', '/v1/model?chatKey=u2')).json.model).toBeNull()
+
+        // Free-form ids are allowed, as with /model — claude decides.
+        expect((await call('POST', '/v1/model', { chatKey: 'u1', model: 'claude-opus-5-5[1m]' })).json)
+            .toEqual({ ok: true, model: 'claude-opus-5-5[1m]' })
+
+        vi.mocked(deps.probeModel).mockResolvedValueOnce({ ok: false, message: 'no such model' })
+        expect(await call('POST', '/v1/model', { chatKey: 'u1', model: 'bogus' }))
+            .toEqual({ status: 400, json: { error: 'no such model' } })
+        expect(deps.models.get(httpStateKey('u1'))).toBe('claude-opus-5-5[1m]')
+
+        const probes = vi.mocked(deps.probeModel).mock.calls.length
+        expect(await call('POST', '/v1/model', { chatKey: 'u1', model: 'default' }))
+            .toEqual({ status: 200, json: { ok: true, model: null } })
+        expect(deps.models.get(httpStateKey('u1'))).toBeUndefined()
+        expect(deps.probeModel).toHaveBeenCalledTimes(probes)
+
+        for (const model of [undefined, '', 42, 'a b', '--help; rm', 'x'.repeat(101)]) {
+            expect((await call('POST', '/v1/model', { chatKey: 'u1', model })).status).toBe(400)
+        }
+        expect((await call('POST', '/v1/model', { model: 'opus' })).status).toBe(400)
+        expect((await call('DELETE', '/v1/model')).status).toBe(405)
+    })
+
+    it('/v1/model on a wa: key is the owner DM\'s choice; 403 for a non-owner', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        const forbidden = { status: 403, json: { error: 'chatKey wa: hanya untuk nomor owner' } }
+        expect(await call('GET', '/v1/model?chatKey=wa:628999')).toEqual(forbidden)
+        expect(await call('POST', '/v1/model', { chatKey: 'wa:628999', model: 'opus' })).toEqual(forbidden)
+        expect(deps.probeModel).not.toHaveBeenCalled()
+
+        const chat = fakeChat()
+        await dispatch(chat, { text: '/model sonnet', hasFile: false, file: null }, deps)
+        expect((await call('GET', '/v1/model?chatKey=wa:628111')).json.model).toBe('sonnet')
+        expect((await call('POST', '/v1/model', { chatKey: 'wa:628111', model: 'opus' })).status).toBe(200)
+        expect(deps.probeModel).toHaveBeenLastCalledWith('opus', targetFor(deps.config, chat).workspace)
+        expect(deps.models.get(chatKey(chat))).toBe('opus')
+    })
+
     it('POST /v1/chat with media: saved to the media dir and named in the prompt', async () => {
         const stateDir = tmp()
         const deps = makeDeps({ config: testConfig({ http: HTTP, mediaDir: path.join(stateDir, 'media') }), now: () => 7 })

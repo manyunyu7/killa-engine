@@ -14,6 +14,8 @@
  */
 
 import { targetFor } from '../config.ts'
+import { chatKey } from './dispatch.ts'
+import { recordUsage } from './usage.ts'
 import type { Deps } from './ports.ts'
 import type { ChatSession } from '../types.ts'
 
@@ -44,7 +46,7 @@ async function decide(s: ChatSession, deps: Deps): Promise<FlushOutcome> {
     const { workspace, runAs } = targetFor(config, s.chat)
     if (deps.memoryTouchedSince(workspace, s.startedAt)) return 'skipped-touched'
 
-    const { reply } = await deps.runAgent({
+    const { reply, usage } = await deps.runAgent({
         text: FLUSH_PROMPT,
         sessionId: s.sessionId,
         workspace, runAs,
@@ -52,6 +54,8 @@ async function decide(s: ChatSession, deps: Deps): Promise<FlushOutcome> {
         timeoutMs: config.agentTimeoutMs,
         model: config.flushModel,
     })
+    // A flush is a real run with a real bill: it counts like any turn.
+    if (usage) recordUsage(deps, chatKey(s.chat), usage, config.flushModel)
     deps.log(s.chat.account, `flush ${s.chat.number} <- ${reply.slice(0, 120)}`)
     return 'flushed'
 }

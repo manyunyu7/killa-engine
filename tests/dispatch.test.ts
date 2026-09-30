@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { buildPrompt, chatKey, deliver, dispatch, elevatedEnvFor, NO_REMINDERS } from '../src/core/dispatch.ts'
+import { buildPrompt, canonicalizeKeys, chatKey, deliver, dispatch, elevatedEnvFor, NO_REMINDERS } from '../src/core/dispatch.ts'
 import { fakeChat, flush, makeDeps, testConfig } from './helpers.ts'
 import type { Deps } from '../src/core/ports.ts'
 
@@ -250,6 +250,13 @@ describe('buildPrompt', () => {
         expect(buildPrompt({ text: 'nih', hasFile: true, file: null }, ctx)).toContain('gagal diunduh')
     })
 
+    it('names every attachment when there are several, audio included', () => {
+        const p = buildPrompt({ text: 'cek', hasFile: true,
+            file: { path: '/m/a.png', kind: 'image', name: 'a.png' },
+            moreFiles: [{ path: '/m/b.ogg', kind: 'audio', name: 'b.ogg' }] }, ctx)
+        expect(p).toMatch(/cek\n\n\[User mengirim sebuah gambar\. File-nya ada di \/m\/a\.png[^\n]*\]\n\[User mengirim audio "b\.ogg"/)
+    })
+
     it('tells the agent to READ a document, and how', () => {
         // Without the pandoc hint the agent asks the user to retype the file.
         const p = buildPrompt({ text: 'ini makalahnya',
@@ -390,5 +397,29 @@ describe('per-conversation state', () => {
     it('is stable for the same conversation', () => {
         expect(chatKey({ jid: '12345@g.us', number: '628111' }))
             .toBe(chatKey({ jid: '12345@g.us', number: '628111' }))
+    })
+
+    it('files a DM under the phone-number jid whether it arrived on @lid or @s.whatsapp.net', () => {
+        expect(chatKey({ jid: '99887766@lid', number: '628111' })).toBe(DM_KEY)
+        expect(chatKey({ jid: '628111@s.whatsapp.net', number: '628111' })).toBe(DM_KEY)
+        expect(chatKey({ jid: 'http:u1', number: 'http:u1' })).toBe('http:u1#http:u1')
+    })
+
+    it('migrates old @lid DM keys once, keeping an existing canonical entry', () => {
+        expect(canonicalizeKeys({ '99@lid#628111': 'a', '12@g.us#628111': 'g', 'http:u#http:u': 'h', '628333': 'legacy' }))
+            .toEqual({ [DM_KEY]: 'a', '12@g.us#628111': 'g', 'http:u#http:u': 'h', '628333': 'legacy' })
+        expect(canonicalizeKeys({ '99@lid#628111': 'old', [DM_KEY]: 'new' })).toEqual({ [DM_KEY]: 'new' })
+        expect(canonicalizeKeys({ [DM_KEY]: 'x', '12@g.us#628111': 'g' })).toBeNull()
+    })
+
+    it('a LID DM resumes the session started on the PN jid, and replies on the jid it came in on', async () => {
+        const deps = makeDeps()
+        await dispatch(fakeChat(), msg('satu'), deps)
+        await flush()
+        const lid = fakeChat({ jid: '99887766@lid' })
+        await dispatch(lid, msg('dua'), deps)
+        await flush()
+        expect(vi.mocked(deps.runAgent).mock.calls.map(c => c[0].sessionId)).toEqual([null, 'sess-1'])
+        expect(lid.texts).toEqual(['halo'])
     })
 })

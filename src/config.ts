@@ -157,8 +157,10 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
             ? { token: env.TELEGRAM_BOT_TOKEN, chat: env.TELEGRAM_CHAT_ID }
             : null,
         http: null,
+        mirror: null,
     }
     config.http = parseHttp(env, config, workspacesDir, home, exists, errors)
+    config.mirror = parseMirror(env, errors)
 
     if (!workspaceDir) errors.push('WORKSPACE wajib diisi (nama workspace, atau WORKSPACE_DIR untuk path penuh).')
     else if (!exists(workspaceDir)) errors.push(`workspace tidak ditemukan: ${workspaceDir}`)
@@ -226,6 +228,31 @@ function parseHttp(env: NodeJS.ProcessEnv, config: Config, workspacesDir: string
 
     return { port, bind: (env.HTTP_BIND ?? '').trim() || '127.0.0.1', token, account, workspaceDir }
 }
+
+/**
+ * The mirror hook: off unless MIRROR_URL is set, and then it must carry a
+ * token — the payload is the owner's private conversation.
+ */
+function parseMirror(env: NodeJS.ProcessEnv, errors: string[]): Config['mirror'] {
+    const url = (env.MIRROR_URL ?? '').trim()
+    if (!url) return null
+    let ok = false
+    try { ok = ['http:', 'https:'].includes(new URL(url).protocol) } catch { /* reported below */ }
+    if (!ok) errors.push(`MIRROR_URL tidak valid: ${url}`)
+    const token = (env.MIRROR_TOKEN ?? '').trim()
+    if (!token) errors.push('MIRROR_TOKEN wajib diisi kalau MIRROR_URL diset.')
+    return { url, token }
+}
+
+/** Group jids end with this; everything else that reaches dispatch is a DM or an HTTP chat. */
+export const isGroupJid = (jid: string): boolean => jid.endsWith('@g.us')
+
+/**
+ * The phone-number jid of an owner's DM. WhatsApp may deliver the same DM on
+ * a `@lid` jid instead; state is keyed on this canonical form so both, and
+ * the HTTP `wa:<number>` chatKey, land on one conversation.
+ */
+export const dmJid = (number: string): string => `${number}@s.whatsapp.net`
 
 /** Synthetic jids for HTTP chats start with this; no WhatsApp jid ever does. */
 export const HTTP_JID_PREFIX = 'http:'

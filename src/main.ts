@@ -20,14 +20,16 @@ import { forAccountConfig, isHttpJid, parseConfig } from './config.ts'
 import { createClaude } from './agent/claude.ts'
 import { discoverAliases } from './agent/aliases.ts'
 import { createQueue } from './core/queue.ts'
-import { dispatch } from './core/dispatch.ts'
-import { jsonFile } from './store/json-file.ts'
+import { canonicalizeKeys, dispatch } from './core/dispatch.ts'
+import { jsonFile, type JsonFile } from './store/json-file.ts'
 import { createSessionStore } from './store/sessions.ts'
 import { createTranscriptStore, type Line } from './store/transcript.ts'
 import { flushStale } from './core/flush.ts'
 import { memoryTouchedSince } from './core/memory-files.ts'
 import { createModelStore } from './store/models.ts'
 import { createReminderStore, type ReminderFile } from './store/reminders.ts'
+import { createUsageStore, type UsageFile } from './store/usage.ts'
+import { createMirror } from './core/mirror.ts'
 import { createGateway, downloadMedia, mediaOf, saveIncomingMedia } from './whatsapp/connection.ts'
 import { extractText } from './whatsapp/inbound.ts'
 import { createHttpServer } from './http/server.ts'
@@ -67,22 +69,34 @@ async function notifyTelegram(text: string): Promise<void> {
     }
 }
 
+// DMs used to be filed under whatever jid WhatsApp delivered them on; a
+// `@lid` one is now filed under the phone-number jid (see chatKey). Move old
+// entries once, before the stores read them, so no conversation is dropped.
+function canonicalFile<T>(file: JsonFile<Record<string, T>>): JsonFile<Record<string, T>> {
+    const moved = canonicalizeKeys(file.read())
+    if (moved) { file.write(moved); log('state', `kunci DM @lid dipindah ke nomor di ${path.basename(file.path)}`) }
+    return file
+}
+
 const claude = createClaude()
 const sessions = createSessionStore(
-    jsonFile<Record<string, ChatSession>>(path.join(config.stateDir, 'chat-sessions.json'), () => ({})),
+    canonicalFile(jsonFile<Record<string, ChatSession>>(path.join(config.stateDir, 'chat-sessions.json'), () => ({}))),
     config.sessionIdleMs)
 const transcripts = createTranscriptStore(
-    jsonFile<Record<string, Line[]>>(path.join(config.stateDir, 'chat-transcripts.json'), () => ({})))
+    canonicalFile(jsonFile<Record<string, Line[]>>(path.join(config.stateDir, 'chat-transcripts.json'), () => ({}))))
 const models = createModelStore(
-    jsonFile<Record<string, string>>(path.join(config.stateDir, 'chat-models.json'), () => ({})))
+    canonicalFile(jsonFile<Record<string, string>>(path.join(config.stateDir, 'chat-models.json'), () => ({}))))
 const reminders = createReminderStore({
     file: jsonFile<ReminderFile>(path.join(config.stateDir, 'reminders.json'), () => ({ seq: 0, items: [] })),
     maxPerDay: config.remindersMaxPerDay,
     log: msg => log('reminder', msg),
 })
 
+const usage = createUsageStore(
+    jsonFile<UsageFile>(path.join(config.stateDir, 'usage.json'), () => ({ entries: [] })))
+
 const deps: Deps = {
-    config, sessions, transcripts, models, reminders,
+    config, sessions, transcripts, models, reminders, usage,
     queue: createQueue((key, e) => console.error(`[queue ${key}]`, e.message)),
     modelAliases: discoverAliases(() =>
         execSync(`${process.env.CLAUDE_BIN || 'claude'} --help`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString()),
@@ -92,6 +106,7 @@ const deps: Deps = {
     memoryTouchedSince,
     now: Date.now,
     log,
+    ...(config.mirror ? { mirror: createMirror({ ...config.mirror, fetch, log: m => log('mirror', m) }) } : {}),
 }
 
 // Sessions past the idle window get one last turn to write memory, then are
@@ -124,6 +139,8 @@ setInterval(() => {
         // An HTTP chat has no socket to push into, and the channel is
         // request/response only: the reminder is stored and listed (/reminders
         // over HTTP), but firing it is a logged no-op. Reply-only still holds.
+        // (A `wa:<owner>` HTTP chat files under the owner's DM jid, not http:,
+        // so its reminders fire on WhatsApp like any DM reminder.)
         if (isHttpJid(r.jid)) { log(r.account, `reminder #${r.id} untuk ${r.jid} tidak dikirim (kanal HTTP)`); return }
         if (!forAccountConfig(config, r.account).ownerNumbers.includes(r.number)) {
             throw new Error(`${r.number} bukan owner lagi`)
@@ -144,6 +161,8 @@ for (const account of config.accounts) {
 }
 console.log(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} — sekarang `
     + new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }))
+
+if (config.mirror) log('mirror', `giliran DM owner WhatsApp di-mirror ke ${new URL(config.mirror.url).origin}`)
 
 if (config.http) {
     const { port, bind, account, workspaceDir } = config.http

@@ -10,6 +10,8 @@ import type { ModelStore } from '../store/models.ts'
 import type { ReminderStore } from '../store/reminders.ts'
 import type { SessionStore } from '../store/sessions.ts'
 import type { TranscriptStore } from '../store/transcript.ts'
+import type { UsageStore } from '../store/usage.ts'
+import type { MirrorPayload } from './mirror.ts'
 import type { Queue } from './queue.ts'
 
 /** One conversation, already resolved to an owner. */
@@ -28,6 +30,18 @@ export interface Chat {
      * text instead of WhatsApp-sized chunks, so the caller gets it back intact.
      */
     unchunked?: boolean
+    /**
+     * Which front door this chat came through. Unset means WhatsApp. An HTTP
+     * `wa:<number>` chat shares the WhatsApp DM's jid (and so its state), so
+     * the jid alone cannot tell the two apart — this can.
+     */
+    channel?: 'http'
+}
+
+export interface IncomingFile {
+    path: string
+    kind: 'image' | 'document' | 'audio'
+    name: string
 }
 
 export interface Incoming {
@@ -35,7 +49,9 @@ export interface Incoming {
     /** True when the message carried a file, even if the download failed. */
     hasFile: boolean
     /** The downloaded attachment, or null when there was none (or it failed). */
-    file: { path: string; kind: 'image' | 'document'; name: string } | null
+    file: IncomingFile | null
+    /** Further attachments after `file` (HTTP may carry several; WhatsApp never does). */
+    moreFiles?: IncomingFile[]
 }
 
 export interface Deps {
@@ -44,6 +60,7 @@ export interface Deps {
     transcripts: TranscriptStore
     models: ModelStore
     reminders: ReminderStore
+    usage: UsageStore
     queue: Queue
     modelAliases: string[]
     runAgent(run: AgentRun): Promise<AgentResult>
@@ -53,6 +70,8 @@ export interface Deps {
     memoryTouchedSince(workspace: string, since: number): boolean
     now(): number
     log(account: string, message: string): void
+    /** Fire-and-forget copy of a completed WhatsApp owner-DM turn (MIRROR_URL); absent = off. */
+    mirror?(payload: MirrorPayload): void
 }
 
 export type { Reminder }

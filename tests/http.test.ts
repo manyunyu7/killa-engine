@@ -7,15 +7,17 @@ import type { AddressInfo } from 'node:net'
 import type http from 'node:http'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { targetFor } from '../src/config.ts'
-import { chatKey } from '../src/core/dispatch.ts'
-import { collectingChat, httpHistory, httpIdentity, httpStateKey, isChatKey, isModelName,
-         resetHttpChat, runHttpTurn } from '../src/http/chat.ts'
+import { chatKey, dispatch } from '../src/core/dispatch.ts'
+import { cancelHttpReminder, chatIdentity, ChatKeyForbidden, collectingChat, httpHistory, httpIdentity, httpReminders,
+         httpStateKey, isChatKey, isModelName, resetHttpChat, runHttpTurn } from '../src/http/chat.ts'
+import { ALLOWED_MIME_TYPES, contentTypeFor, MAX_MEDIA_BYTES, MAX_SERVE_BYTES, mediaRoots, parseMedia, resolveMedia,
+         safeName, saveMedia } from '../src/http/media.ts'
 import { authorized, createHttpServer, intParam } from '../src/http/server.ts'
 import { deleteFile, gitCommit, gitLog, isHidden, listDir, looksBinary, MAX_FILE_BYTES, MAX_WRITE_BYTES,
          parseGitLog, readFile, resolveInside, runGit, WorkspaceError, writeFile } from '../src/http/workspace.ts'
 import type { Deps } from '../src/core/ports.ts'
 import type { HttpConfig } from '../src/types.ts'
-import { flush, makeDeps, testConfig } from './helpers.ts'
+import { fakeChat, flush, makeDeps, testConfig } from './helpers.ts'
 
 beforeAll(() => { process.env.TZ = 'Asia/Jakarta' })
 
@@ -52,7 +54,7 @@ describe('chatKey -> chat identity', () => {
     })
 
     it('collecting chat is unchunked and filed under the HTTP account', () => {
-        const chat = collectingChat({ ...HTTP, account: 'kerja' }, 'u1')
+        const chat = collectingChat({ ...HTTP, account: 'kerja' }, httpIdentity('u1'))
         expect(chat.unchunked).toBe(true)
         expect(chat.account).toBe('kerja')
     })
@@ -124,21 +126,264 @@ describe('dispatch integration', () => {
     it('/new resets the session and clears the transcript', async () => {
         const deps = httpDeps()
         await runHttpTurn(HTTP, deps, 'u1', 'halo')
-        expect(httpHistory(deps, 'u1', 20)).toHaveLength(2)
+        expect(httpHistory(HTTP, deps, 'u1', 20)).toHaveLength(2)
         await resetHttpChat(HTTP, deps, 'u1')
         expect(deps.sessions.get(httpStateKey('u1'))).toBeNull()
-        expect(httpHistory(deps, 'u1', 20)).toEqual([])
+        expect(httpHistory(HTTP, deps, 'u1', 20)).toEqual([])
     })
 
     it('history returns the last N lines', async () => {
         const deps = httpDeps()
         await runHttpTurn(HTTP, deps, 'u1', 'halo')
-        expect(httpHistory(deps, 'u1', 1)).toEqual([expect.objectContaining({ who: 'agent', text: 'halo' })])
+        expect(httpHistory(HTTP, deps, 'u1', 1)).toEqual([expect.objectContaining({ who: 'agent', text: 'halo' })])
     })
 
     it('returns an empty reply when the turn threw', async () => {
         const deps = httpDeps({ runAgent: vi.fn(async () => { throw new Error('boom') }) })
         expect(await runHttpTurn(HTTP, deps, 'u1', 'halo')).toEqual({ reply: '', attachments: [] })
+    })
+})
+
+describe('wa:<number> chatKey — the owner\'s WhatsApp DM', () => {
+    const WA_KEY = '628111@s.whatsapp.net#628111'
+    const msg = (text: string) => ({ text, hasFile: false, file: null })
+
+    it('maps an owner number to the WhatsApp DM identity and state key', () => {
+        const id = chatIdentity(testConfig({ http: HTTP }), HTTP, 'wa:628111')
+        expect(id).toEqual({ jid: '628111@s.whatsapp.net', number: '628111' })
+        expect(chatKey(id)).toBe(WA_KEY)
+        // Same key the gateway's chat produces, whether WhatsApp used a PN or a LID jid.
+        expect(chatKey(fakeChat())).toBe(WA_KEY)
+        expect(chatKey(fakeChat({ jid: '99887766@lid' }))).toBe(WA_KEY)
+    })
+
+    it.each(['wa:628999', 'wa:', 'wa:abc', 'wa:+628111'])('%s is forbidden (403)', key => {
+        expect(() => chatIdentity(testConfig({ http: HTTP }), HTTP, key)).toThrow(ChatKeyForbidden)
+        try { chatIdentity(testConfig({ http: HTTP }), HTTP, key) } catch (e) { expect((e as ChatKeyForbidden).status).toBe(403) }
+    })
+
+    it('checks owners of HTTP_ACCOUNT, not the global list', () => {
+        const config = testConfig({ accounts: ['main', 'kerja'], perAccount: { kerja: { ownerNumbers: ['628222'] } } })
+        const kerja = { ...HTTP, account: 'kerja' }
+        expect(chatIdentity(config, kerja, 'wa:628222').number).toBe('628222')
+        expect(() => chatIdentity(config, kerja, 'wa:628111')).toThrow(ChatKeyForbidden)
+    })
+
+    it('runs in the DM\'s workspace (contact persona included), not the HTTP one', async () => {
+        const deps = makeDeps({ config: testConfig({ http: HTTP, contactWorkspaces: { 628111: '/ws-owner' } }) })
+        await runHttpTurn(HTTP, deps, 'wa:628111', 'halo')
+        expect(deps.runAgent).toHaveBeenCalledWith(expect.objectContaining({ workspace: '/ws-owner' }))
+    })
+
+    it('shares session, transcript and model with the WhatsApp DM', async () => {
+        const deps = httpDeps()
+        const chat = fakeChat()
+        await dispatch(chat, msg('/model opus'), deps)
+        await dispatch(chat, msg('dari wa'), deps)
+        await flush()
+        await runHttpTurn(HTTP, deps, 'wa:628111', 'dari ghina')
+        const runs = vi.mocked(deps.runAgent).mock.calls.map(c => c[0])
+        expect(runs.map(r => [r.sessionId, r.model])).toEqual([[null, 'opus'], ['sess-1', 'opus']])
+        expect(httpHistory(HTTP, deps, 'wa:628111', 10).map(l => l.text)).toEqual(['dari wa', 'halo', 'dari ghina', 'halo'])
+        // A WhatsApp /new also resets what Ghina sees.
+        await dispatch(chat, msg('/new'), deps)
+        await flush()
+        expect(httpHistory(HTTP, deps, 'wa:628111', 10)).toEqual([])
+    })
+
+    it('serializes turns across both channels on one queue', async () => {
+        const releases: (() => void)[] = []
+        const deps = httpDeps({
+            runAgent: vi.fn(() => new Promise<{ reply: string; sessionId: string }>(r => {
+                releases.push(() => r({ reply: `r${releases.length}`, sessionId: 's' }))
+            })),
+        })
+        const chat = fakeChat()
+        await dispatch(chat, msg('dari wa'), deps)
+        await flush()
+        const http = runHttpTurn(HTTP, deps, 'wa:628111', 'dari ghina')
+        await flush(); await flush()
+        expect(deps.runAgent).toHaveBeenCalledTimes(1)
+        releases[0]!()
+        await flush(); await flush()
+        expect(deps.runAgent).toHaveBeenCalledTimes(2)
+        releases[1]!()
+        expect((await http).reply).toBe('r2')
+        expect(chat.texts).toEqual(['r1'])
+    })
+
+    it('files reminders under the owner number and DM jid, so they list on both sides and fire on WhatsApp', async () => {
+        const deps = httpDeps({ runAgent: vi.fn(async () => ({ reply: 'ok [[remind:in 1h|minum]]', sessionId: 's' })) })
+        await runHttpTurn(HTTP, deps, 'wa:628111', 'ingetin')
+        expect(deps.reminders.list('628111')).toEqual([expect.objectContaining({
+            number: '628111', jid: '628111@s.whatsapp.net', account: 'main', text: 'minum' })])
+        const chat = fakeChat()
+        await dispatch(chat, msg('/reminders'), deps)
+        expect(chat.texts[0]).toContain('minum')
+    })
+
+    it('HTTP turns on a wa: key are delivered to the caller, never to WhatsApp', async () => {
+        const deps = httpDeps()
+        const out = await runHttpTurn(HTTP, deps, 'wa:628111', 'halo')
+        expect(out.reply).toBe('halo')
+        expect(collectingChat(HTTP, httpIdentity('x')).channel).toBe('http')
+    })
+})
+
+describe('reminders over HTTP', () => {
+    it('lists and cancels by chat, and cannot touch another chat\'s reminder', () => {
+        const deps = httpDeps()
+        const mine = deps.reminders.add({ spec: 'in 1h', text: 'minum', number: 'http:u1', account: 'main', jid: 'http:u1' })!
+        const wa = deps.reminders.add({ spec: 'daily 07:00', text: 'olahraga', number: '628111', account: 'main',
+                                        jid: '628111@s.whatsapp.net' })!
+        expect(httpReminders(HTTP, deps, 'u1')).toEqual([{ id: mine.id, spec: 'in 1h', text: 'minum', nextAt: mine.nextAt }])
+        expect(httpReminders(HTTP, deps, 'wa:628111')).toEqual([expect.objectContaining({ id: wa.id, text: 'olahraga' })])
+        expect(httpReminders(HTTP, deps, 'u2')).toEqual([])
+        expect(cancelHttpReminder(HTTP, deps, 'u2', mine.id)).toBe(false)
+        expect(cancelHttpReminder(HTTP, deps, 'u1', mine.id)).toBe(true)
+        expect(cancelHttpReminder(HTTP, deps, 'u1', mine.id)).toBe(false)
+        expect(cancelHttpReminder(HTTP, deps, 'wa:628111', wa.id)).toBe(true)
+    })
+})
+
+describe('inbound media', () => {
+    const b64 = (s: string) => Buffer.from(s).toString('base64')
+
+    it('accepts the allowlist and classifies it', () => {
+        const items = parseMedia([
+            { name: 'foto.png', mimeType: 'image/png', dataBase64: b64('png') },
+            { name: 'laporan.pdf', mimeType: 'application/pdf; charset=binary', dataBase64: b64('pdf') },
+            { mimeType: 'audio/ogg', dataBase64: b64('ogg') },
+        ])
+        expect(items.map(i => [i.name, i.kind, i.data.toString()])).toEqual([
+            ['foto.png', 'image', 'png'], ['laporan.pdf', 'document', 'pdf'], ['lampiran.ogg', 'audio', 'ogg']])
+        expect(parseMedia(undefined)).toEqual([])
+        expect(ALLOWED_MIME_TYPES).toContain('text/plain')
+    })
+
+    it.each([
+        ['not an array', {}, 400],
+        ['too many', Array(4).fill({ mimeType: 'text/plain', dataBase64: 'YQ==' }), 413],
+        ['missing data', [{ mimeType: 'text/plain' }], 400],
+        ['not an object', ['x'], 400],
+        ['bad name', [{ name: 3, mimeType: 'text/plain', dataBase64: 'YQ==' }], 400],
+        ['html', [{ mimeType: 'text/html', dataBase64: 'YQ==' }], 415],
+        ['svg', [{ mimeType: 'image/svg+xml', dataBase64: 'YQ==' }], 415],
+        ['executable', [{ mimeType: 'application/x-msdownload', dataBase64: 'YQ==' }], 415],
+        ['empty mime', [{ mimeType: '', dataBase64: 'YQ==' }], 415],
+        ['bad base64', [{ mimeType: 'text/plain', dataBase64: 'a$b=' }], 400],
+        ['empty base64', [{ mimeType: 'text/plain', dataBase64: '' }], 400],
+        ['over 8 MB', [{ mimeType: 'image/png', dataBase64: 'A'.repeat(Math.ceil(MAX_MEDIA_BYTES * 4 / 3) + 8) }], 413],
+    ])('rejects %s', (_label, media, status) => {
+        expect(() => parseMedia(media)).toThrow(expect.objectContaining({ status }))
+    })
+
+    it('accepts exactly 8 MB', () => {
+        const data = Buffer.alloc(MAX_MEDIA_BYTES, 1).toString('base64')
+        expect(parseMedia([{ mimeType: 'image/png', dataBase64: data }])[0]!.data.length).toBe(MAX_MEDIA_BYTES)
+    })
+
+    it('never lets a filename escape the media dir', () => {
+        expect(safeName('../../etc/passwd')).toBe('passwd')
+        expect(safeName('..\\..\\x.pdf')).toBe('x.pdf')
+        expect(safeName('..')).toBe('dokumen')
+        expect(safeName('a<b>.md')).toBe('a_b_.md')
+    })
+
+    it('saves like WhatsApp media: in-<ms>, one file per item, no collisions', () => {
+        const dir = path.join(tmp(), 'media')
+        const files = saveMedia(parseMedia([
+            { mimeType: 'image/jpeg', dataBase64: b64('a') }, { mimeType: 'image/jpeg', dataBase64: b64('b') },
+            { name: '../laporan.pdf', mimeType: 'application/pdf', dataBase64: b64('c') },
+        ]), dir, () => 42)
+        expect(files).toEqual([
+            { path: path.join(dir, 'in-42-0.jpeg'), kind: 'image', name: 'lampiran.jpeg' },
+            { path: path.join(dir, 'in-42-1.jpeg'), kind: 'image', name: 'lampiran.jpeg' },
+            { path: path.join(dir, 'in-42-2-laporan.pdf'), kind: 'document', name: 'laporan.pdf' },
+        ])
+        expect(files.map(f => fs.readFileSync(f.path, 'utf8'))).toEqual(['a', 'b', 'c'])
+        expect(saveMedia([], path.join(dir, 'never'))).toEqual([])
+        expect(fs.existsSync(path.join(dir, 'never'))).toBe(false)
+    })
+
+    it('hands every file to the agent in the prompt, like WhatsApp media', async () => {
+        const deps = httpDeps()
+        await runHttpTurn(HTTP, deps, 'u1', 'lihat ini', undefined, [
+            { path: '/m/in-1-0.png', kind: 'image', name: 'lampiran.png' },
+            { path: '/m/in-1-1-a.pdf', kind: 'document', name: 'a.pdf' },
+            { path: '/m/in-1-2.ogg', kind: 'audio', name: 'vn.ogg' },
+        ])
+        const { text } = vi.mocked(deps.runAgent).mock.calls[0]![0]
+        expect(text).toContain('lihat ini')
+        expect(text).toContain('gambar. File-nya ada di /m/in-1-0.png')
+        expect(text).toContain('dokumen "a.pdf". File-nya ada di /m/in-1-1-a.pdf')
+        expect(text).toContain('audio "vn.ogg". File-nya ada di /m/in-1-2.ogg')
+        expect(httpHistory(HTTP, deps, 'u1', 1)).toBeDefined()
+    })
+})
+
+describe('GET /v1/media path fence', () => {
+    function roots() {
+        const ws = tmp()
+        const media = tmp()
+        const outside = tmp()
+        fs.mkdirSync(path.join(ws, 'out'))
+        fs.writeFileSync(path.join(ws, 'out', 'a.png'), 'png')
+        fs.writeFileSync(path.join(ws, '.env'), 'PASS=x')
+        fs.mkdirSync(path.join(ws, '.git'))
+        fs.writeFileSync(path.join(ws, '.git', 'config'), 'x')
+        fs.writeFileSync(path.join(media, 'in-1.jpeg'), 'jpg')
+        fs.writeFileSync(path.join(outside, 'secret.txt'), 'rahasia')
+        fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(ws, 'link.txt'))
+        fs.symlinkSync(path.join(ws, '.env'), path.join(ws, 'env-link.txt'))
+        fs.mkdirSync(path.join(ws, 'dir'))
+        return { ws, media, outside, list: [ws, media] }
+    }
+
+    it('serves absolute paths inside any root, and relative paths from the first', () => {
+        const r = roots()
+        expect(resolveMedia(r.list, path.join(r.ws, 'out', 'a.png'))).toEqual({ file: fs.realpathSync(path.join(r.ws, 'out', 'a.png')), size: 3 })
+        expect(resolveMedia(r.list, path.join(r.media, 'in-1.jpeg')).size).toBe(3)
+        expect(resolveMedia(r.list, 'out/a.png').size).toBe(3)
+    })
+
+    it.each([
+        ['outside every root', (r: ReturnType<typeof roots>) => path.join(r.outside, 'secret.txt'), 400],
+        ['traversal', (r: ReturnType<typeof roots>) => `${r.ws}/out/../../x`, 400],
+        ['relative traversal', () => '../etc/passwd', 400],
+        ['a symlink pointing out', () => 'link.txt', 400],
+        ['.env', () => '.env', 400],
+        ['.git', (r: ReturnType<typeof roots>) => path.join(r.ws, '.git', 'config'), 400],
+        ['a symlink onto .env', () => 'env-link.txt', 400],
+        ['NUL', () => 'a\0b', 400],
+        ['empty', () => '', 400],
+        ['/etc/passwd', () => '/etc/passwd', 400],
+        ['missing', () => 'out/nope.png', 404],
+        ['a directory', () => 'dir', 400],
+        ['the root itself', (r: ReturnType<typeof roots>) => r.ws, 400],
+    ])('refuses %s', (_label, p, status) => {
+        const r = roots()
+        expect(() => resolveMedia(r.list, p(r))).toThrow(expect.objectContaining({ status }))
+    })
+
+    it('refuses a file over the serve cap', () => {
+        const r = roots()
+        fs.writeFileSync(path.join(r.ws, 'big.bin'), '')
+        fs.truncateSync(path.join(r.ws, 'big.bin'), MAX_SERVE_BYTES + 1)
+        expect(() => resolveMedia(r.list, 'big.bin')).toThrow(expect.objectContaining({ status: 413 }))
+    })
+
+    it('roots are the HTTP workspace, each owner\'s workspace and the media dir', () => {
+        const config = testConfig({ http: HTTP, ownerNumbers: ['628111', '628222'], contactWorkspaces: { 628222: '/ws-2' } })
+        expect(mediaRoots(config, HTTP)).toEqual(['/ws-ghina', '/ws', '/ws-2', '/root/state/media'])
+    })
+
+    it('types: images and pdf as themselves, text with a charset, the rest as octet-stream', () => {
+        expect(contentTypeFor('a.PNG')).toBe('image/png')
+        expect(contentTypeFor('a.pdf')).toBe('application/pdf')
+        expect(contentTypeFor('a.md')).toBe('text/markdown; charset=utf-8')
+        expect(contentTypeFor('a.html')).toBe('application/octet-stream')
+        expect(contentTypeFor('a.svg')).toBe('application/octet-stream')
     })
 })
 
@@ -546,6 +791,106 @@ describe('server', () => {
         const call2 = await start(httpDeps(), tmp())
         expect(await call2('POST', '/v1/git/commit', { message: 'x' }))
             .toEqual({ status: 400, json: { error: 'workspace bukan repo git' } })
+    })
+
+    it('wa: chatKey: 403 for a non-owner on every chat route, 200 for the owner', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        const forbidden = { status: 403, json: { error: 'chatKey wa: hanya untuk nomor owner' } }
+        expect(await call('POST', '/v1/chat', { chatKey: 'wa:628999', text: 'halo' })).toEqual(forbidden)
+        expect(await call('POST', '/v1/chat/new', { chatKey: 'wa:628999' })).toEqual(forbidden)
+        expect(await call('GET', '/v1/chat/history?chatKey=wa:628999')).toEqual(forbidden)
+        expect(await call('GET', '/v1/reminders?chatKey=wa:628999')).toEqual(forbidden)
+        expect(await call('POST', '/v1/reminders/cancel', { chatKey: 'wa:628999', id: 1 })).toEqual(forbidden)
+        expect(deps.runAgent).not.toHaveBeenCalled()
+        expect(await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'halo' })).toEqual({ status: 200, json: { reply: 'halo' } })
+        expect(deps.sessions.get('628111@s.whatsapp.net#628111')).toBe('sess-1')
+    })
+
+    it('GET /v1/reminders and POST /v1/reminders/cancel', async () => {
+        const deps = httpDeps()
+        const r = deps.reminders.add({ spec: 'daily 07:00', text: 'minum', number: 'http:u1', account: 'main', jid: 'http:u1' })!
+        const call = await start(deps)
+        expect(await call('GET', '/v1/reminders?chatKey=u1')).toEqual({ status: 200, json: {
+            reminders: [{ id: r.id, spec: 'daily 07:00', text: 'minum', nextAt: r.nextAt }] } })
+        expect((await call('GET', '/v1/reminders')).status).toBe(400)
+        for (const id of [undefined, 0, -1, 1.5, '1']) {
+            expect((await call('POST', '/v1/reminders/cancel', { chatKey: 'u1', id })).status).toBe(400)
+        }
+        expect(await call('POST', '/v1/reminders/cancel', { chatKey: 'u2', id: r.id })).toEqual({ status: 200, json: { ok: false } })
+        expect(await call('POST', '/v1/reminders/cancel', { chatKey: 'u1', id: r.id })).toEqual({ status: 200, json: { ok: true } })
+        expect((await call('GET', '/v1/reminders?chatKey=u1')).json).toEqual({ reminders: [] })
+        expect((await call('GET', '/v1/reminders/cancel')).status).toBe(405)
+    })
+
+    it('POST /v1/chat with media: saved to the media dir and named in the prompt', async () => {
+        const stateDir = tmp()
+        const deps = makeDeps({ config: testConfig({ http: HTTP, mediaDir: path.join(stateDir, 'media') }), now: () => 7 })
+        const call = await start(deps)
+        const res = await call('POST', '/v1/chat', { chatKey: 'u1', text: '', media: [
+            { name: 'foto.png', mimeType: 'image/png', dataBase64: Buffer.from('PNG').toString('base64') }] })
+        expect(res).toEqual({ status: 200, json: { reply: 'halo' } })
+        const saved = path.join(stateDir, 'media', 'in-7-0.png')
+        expect(fs.readFileSync(saved, 'utf8')).toBe('PNG')
+        const { text } = vi.mocked(deps.runAgent).mock.calls[0]![0]
+        expect(text).toContain(`(tanpa caption)\n\n[User mengirim sebuah gambar. File-nya ada di ${saved}`)
+        expect(await call('POST', '/v1/chat', { chatKey: 'u1', text: 'x', media: [{ mimeType: 'text/html', dataBase64: 'YQ==' }] }))
+            .toEqual({ status: 415, json: { error: expect.stringContaining('text/html') } })
+        expect((await call('POST', '/v1/chat', { chatKey: 'u1', text: '', media: [] })).status).toBe(400)
+        expect(deps.runAgent).toHaveBeenCalledTimes(1)
+    })
+
+    it('POST /v1/chat takes a multi-megabyte media body, still caps the rest at 1 MB', async () => {
+        const deps = makeDeps({ config: testConfig({ http: HTTP, mediaDir: path.join(tmp(), 'media') }) })
+        const call = await start(deps)
+        const big = Buffer.alloc(3 * 1024 * 1024, 7).toString('base64')
+        expect((await call('POST', '/v1/chat', { chatKey: 'u1', text: 'x', media: [{ mimeType: 'application/pdf', dataBase64: big }] })).status)
+            .toBe(200)
+        expect((await call('PUT', '/v1/workspace/file', { path: 'a.md', content: 'x'.repeat(2 * 1024 * 1024) })).status).toBe(413)
+    })
+
+    it('GET /v1/media streams a file with its type, and refuses outside the roots', async () => {
+        const root = tmp()
+        fs.mkdirSync(path.join(root, 'out'))
+        fs.writeFileSync(path.join(root, 'out', 'a.png'), 'PNGDATA')
+        const outside = tmp()
+        fs.writeFileSync(path.join(outside, 'x.txt'), 'rahasia')
+        const deps = httpDeps()
+        const call = await start(deps, root)
+        const { port } = server!.address() as AddressInfo
+        const res = await fetch(`http://127.0.0.1:${port}/v1/media?path=${encodeURIComponent(path.join(root, 'out', 'a.png'))}`,
+                                { headers: { Authorization: 'Bearer rahasia' } })
+        expect(res.status).toBe(200)
+        expect(res.headers.get('content-type')).toBe('image/png')
+        expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+        expect(await res.text()).toBe('PNGDATA')
+        expect((await call('GET', `/v1/media?path=${encodeURIComponent(path.join(outside, 'x.txt'))}`)).status).toBe(400)
+        expect((await call('GET', '/v1/media?path=out%2Fnope.png')).status).toBe(404)
+        expect((await call('GET', '/v1/media')).status).toBe(400)
+        expect((await call('GET', '/v1/media?path=out%2Fa.png', undefined, null)).status).toBe(401)
+    })
+
+    it('GET /v1/usage: raw entries in the window plus per-day, per-model and total', async () => {
+        const NOW = new Date('2026-10-01T10:00:00+07:00').getTime()
+        const deps = httpDeps({ now: () => NOW })
+        const e = { chatId: 'c', model: 'sonnet', inputTokens: 1, outputTokens: 2, cacheReadTokens: 0,
+                    cacheCreationTokens: 0, costUsd: 0.5, durationMs: 10 }
+        deps.usage.record({ ...e, at: NOW - 60_000 })
+        deps.usage.record({ ...e, at: NOW - 24 * 3600_000, model: 'opus' })
+        deps.usage.record({ ...e, at: NOW - 10 * 24 * 3600_000 })
+        const call = await start(deps)
+        const { status, json } = await call('GET', '/v1/usage?days=2')
+        expect(status).toBe(200)
+        expect(json.entries).toHaveLength(2)
+        expect(json.days).toEqual([
+            expect.objectContaining({ date: '2026-09-30', turns: 1, inputTokens: 1, outputTokens: 2, costUsd: 0.5 }),
+            expect.objectContaining({ date: '2026-10-01', turns: 1 }),
+        ])
+        expect(Object.keys(json.byModel as object).sort()).toEqual(['opus', 'sonnet'])
+        expect(json.total).toMatchObject({ turns: 2, costUsd: 1 })
+        expect(((await call('GET', '/v1/usage')).json.days as unknown[])).toHaveLength(7)
+        expect(((await call('GET', '/v1/usage?days=999')).json.days as unknown[])).toHaveLength(90)
+        expect((await call('GET', '/v1/usage?days=0')).status).toBe(400)
     })
 
     it('404 for unknown paths, 405 for a known path with the wrong method', async () => {

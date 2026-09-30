@@ -5,13 +5,15 @@
  * decision actually lives — is exercised end to end by the tests.
  */
 
-import { routeForChat, targetFor } from '../config.ts'
+import { dmJid, isGroupJid, isHttpJid, routeForChat, targetFor } from '../config.ts'
 import { isImageFile } from './files.ts'
 import { chunk, parseReply } from './markers.ts'
 import { describe } from './schedule.ts'
 import { flushSession } from './flush.ts'
 import { stamp, stampShort } from './time.ts'
-import type { Chat, Deps, Incoming } from './ports.ts'
+import { shouldMirror } from './mirror.ts'
+import { formatUsage, recordUsage, windowStart } from './usage.ts'
+import type { Chat, Deps, Incoming, IncomingFile } from './ports.ts'
 import type { Config } from '../types.ts'
 import type { Line } from '../store/transcript.ts'
 
@@ -30,6 +32,11 @@ export async function dispatch(chat: Chat, incoming: Incoming, deps: Deps): Prom
         return true
     }
     if (text.startsWith('/model')) { await cmdModel(chat, text, deps); return true }
+    if (text === '/usage') {
+        const now = deps.now()
+        await chat.sendText(formatUsage(deps.usage.since(windowStart(now, 7)), now))
+        return true
+    }
 
     // Not a command: one agent run at a time per chat.
     void deps.queue.enqueue(chatKey(chat), () => runTurn(chat, incoming, deps))
@@ -85,8 +92,13 @@ async function cmdModel(chat: Chat, text: string, deps: Deps): Promise<void> {
     }
 }
 
+/** Every attachment a message carries, in order. */
+const filesOf = (incoming: Incoming): IncomingFile[] =>
+    incoming.file ? [incoming.file, ...(incoming.moreFiles ?? [])] : []
+
 async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void> {
-    const tag = incoming.file ? `[${incoming.file.kind === 'image' ? 'gambar' : incoming.file.name}] ` : ''
+    const files = filesOf(incoming)
+    const tag = files.length ? `[${files.map(f => f.kind === 'image' ? 'gambar' : f.name).join(', ')}] ` : ''
     deps.log(chat.account, `agent <- ${chat.number}: ${tag}${incoming.text.slice(0, 80)}`)
     await chat.presence('composing').catch(() => {}) // cosmetic
 
@@ -106,9 +118,11 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
         now,
         briefing: resume ? [] : deps.transcripts.recent(key),
     })
-    deps.transcripts.append(key, 'user', incoming.text || (incoming.file ? `[${tag.trim()}]` : ''))
+    const userText = incoming.text || tag.trim()
+    deps.transcripts.append(key, 'user', userText)
 
-    const { reply, sessionId, turns } = await deps.runAgent({
+    const model = deps.models.get(chatKey(chat))
+    const { reply, sessionId, turns, usage } = await deps.runAgent({
         text,
         sessionId: resume,
         workspace, runAs,
@@ -116,16 +130,31 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
         // a sender on the list. Nothing the agent is told can conjure it.
         extraEnv: elevatedEnvFor(deps.config, chat),
         timeoutMs: deps.config.agentTimeoutMs,
-        model: deps.models.get(chatKey(chat)),
+        model,
     })
     deps.sessions.remember(key, sessionId, { account: chat.account, jid: chat.jid, number: chat.number })
-    deps.transcripts.append(key, 'agent', parseReply(reply).text)
+    const replyText = parseReply(reply).text
+    deps.transcripts.append(key, 'agent', replyText)
+    if (usage) recordUsage(deps, key, usage, model)
 
     await chat.presence('paused').catch(() => {}) // cosmetic
     await deliver(chat, reply, deps)
     deps.log(chat.account, `agent -> ${chat.number}: ${reply.length} char`
         + (turns !== undefined ? `, ${turns} turn${turns === 1 ? ' (tanpa tool)' : ''}` : ''))
+
+    if (deps.mirror && shouldMirror(deps.config, chat)) {
+        try {
+            deps.mirror({ channel: 'wa', number: chat.number, messages: [
+                { role: 'user', text: userText, at: now },
+                { role: 'assistant', text: replyText, at: deps.now() },
+            ] })
+        } catch (e) {
+            // The hook is fire-and-forget; even a broken one must not fail the turn.
+            deps.log(chat.account, `mirror gagal: ${(e as Error).message}`)
+        }
+    }
 }
+
 
 /**
  * The key for per-conversation state.
@@ -136,7 +165,36 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
  * resuming it fails. Including the jid keeps them apart; including the number
  * keeps two people in one group from sharing a thread.
  */
-export const chatKey = (chat: { jid: string; number: string }): string => `${chat.jid}#${chat.number}`
+export const chatKey = (chat: { jid: string; number: string }): string => `${conversationJid(chat)}#${chat.number}`
+
+/**
+ * The jid a chat's state is filed under. A DM is filed under the owner's
+ * phone-number jid whichever jid WhatsApp delivered it on (`@lid` or
+ * `@s.whatsapp.net`) — so a LID migration mid-conversation keeps the thread,
+ * and the HTTP `wa:<number>` chatKey reaches the very same state. Groups and
+ * HTTP chats keep their own jid.
+ */
+export function conversationJid(chat: { jid: string; number: string }): string {
+    return isGroupJid(chat.jid) || isHttpJid(chat.jid) ? chat.jid : dmJid(chat.number)
+}
+
+/**
+ * One-time migration for state written before DMs were filed canonically:
+ * `<lid>@lid#<number>` becomes `<number>@s.whatsapp.net#<number>`. An entry
+ * already under the canonical key wins — it is the one the engine has been
+ * using. Returns null when nothing needed moving.
+ */
+export function canonicalizeKeys<T>(data: Record<string, T>): Record<string, T> | null {
+    let changed = false
+    const out: Record<string, T> = {}
+    for (const [key, value] of Object.entries(data)) {
+        const cut = key.lastIndexOf('#')
+        const canon = cut < 0 ? key : chatKey({ jid: key.slice(0, cut), number: key.slice(cut + 1) })
+        if (canon !== key) changed = true
+        if (canon === key || !(canon in data)) out[canon] = value
+    }
+    return changed ? out : null
+}
 
 /**
  * The elevated credential for this chat's sender, or nothing.
@@ -169,18 +227,26 @@ export function buildPrompt(incoming: Incoming, ctx: PromptContext): string {
 
 function messageOf(incoming: Incoming): string {
     if (!incoming.hasFile) return incoming.text
-    if (!incoming.file) {
+    const files = filesOf(incoming)
+    if (!files.length) {
         return `${incoming.text}\n\n[User mengirim file tapi gagal diunduh — beri tahu user.]`
     }
     const caption = incoming.text || '(tanpa caption)'
-    if (incoming.file.kind === 'image') {
-        return `${caption}\n\n[User mengirim sebuah gambar. File-nya ada di ${incoming.file.path}`
-            + ' — baca file itu untuk melihat isinya.]'
+    return `${caption}\n\n${files.map(fileNote).join('\n')}`
+}
+
+function fileNote(file: IncomingFile): string {
+    if (file.kind === 'image') {
+        return `[User mengirim sebuah gambar. File-nya ada di ${file.path} — baca file itu untuk melihat isinya.]`
+    }
+    if (file.kind === 'audio') {
+        return `[User mengirim audio "${file.name}". File-nya ada di ${file.path} — kamu tidak bisa `
+            + 'mendengarnya langsung; transkrip dulu kalau ada alatnya (mis. whisper), kalau tidak, bilang ke user.]'
     }
     // The agent can't open a .docx directly; naming the tool here is the
     // difference between it reading the file and it asking the user to retype.
-    return `${caption}\n\n[User mengirim dokumen "${incoming.file.name}". File-nya ada di `
-        + `${incoming.file.path} — BACA ISINYA dulu sebelum menjawab. PDF dan teks bisa dibaca `
+    return `[User mengirim dokumen "${file.name}". File-nya ada di `
+        + `${file.path} — BACA ISINYA dulu sebelum menjawab. PDF dan teks bisa dibaca `
         + 'langsung; untuk .docx/.pptx/.xlsx jalankan: pandoc "<path>" -t plain]'
 }
 

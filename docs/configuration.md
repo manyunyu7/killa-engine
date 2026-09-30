@@ -51,7 +51,7 @@ A workspace you keep outside the root (a git repo, say) is fully supported — p
 | `MEMORY_FLUSH_MIN_TURNS` | `4` | A session with fewer user turns is dropped without a flush. The flush is also skipped when a memory file in the workspace (root or `memory/`) already changed during the session — the agent wrote things down on its own. |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard cap per agent run; on expiry the child is killed and the chat gets a "took too long" reply. Big multi-step tasks may need more. |
 | `CLAUDE_BIN` | `claude` | Path to the CLI if not on the service user's PATH (typical under pm2 + nvm: `/home/killa/.nvm/versions/node/v22.x.x/bin/claude`). |
-| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map) and `chat-transcripts.json` (the last 20 lines per chat, for briefing a fresh session). Deleting it forgets which session each chat was in and what was last said — harmless beyond that. |
+| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map), `chat-transcripts.json` (the last 20 lines per chat, for briefing a fresh session), `reminders.json`, `usage.json` (per-run token/cost log, last 90 days — `/usage`, `GET /v1/usage`) and `media/` (incoming attachments). Deleting it forgets which session each chat was in and what was last said — harmless beyond that. |
 
 ## Reminders
 
@@ -79,8 +79,19 @@ A local JSON API so an app on the same machine can talk to the same agent — sa
 | `HTTP_PORT` | — | Port to listen on. Unset = the HTTP channel is disabled. |
 | `HTTP_TOKEN` | — | Required when `HTTP_PORT` is set. Every request must send `Authorization: Bearer <token>`. Use a long random value (`openssl rand -hex 32`). |
 | `HTTP_BIND` | `127.0.0.1` | Address to bind. Keep it on loopback: anyone holding the token drives an agent running with `--dangerously-skip-permissions`. |
-| `HTTP_ACCOUNT` | first of `ACCOUNTS` | Account label HTTP chats are filed under (logs, reminders), and whose workspace they use by default. Must be one of `ACCOUNTS`. |
+| `HTTP_ACCOUNT` | first of `ACCOUNTS` | Account label HTTP chats are filed under (logs, reminders), and whose workspace they use by default. Must be one of `ACCOUNTS`. Its owner numbers are the only ones a `wa:<number>` chatKey may name — that key joins the owner's WhatsApp DM (shared session, transcript, model, reminders; see [http-channel.md](http-channel.md#conventions)). |
 | `HTTP_WORKSPACE` | the account's workspace | Workspace every HTTP chat runs in — a managed name or an absolute path. All HTTP users share it (and its memory); each `chatKey` gets its own session and transcript. |
+
+## Mirror hook (optional)
+
+Posts a copy of every completed WhatsApp owner-DM agent turn to another app — Ghina, so it can show the WhatsApp side of a conversation it shares via the `wa:<number>` chatKey. Payload and rules: [http-channel.md](http-channel.md#mirror-hook-whatsapp--ghina). Groups, slash commands and HTTP-channel turns are never mirrored.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MIRROR_URL` | — | `http(s)://` URL to POST to. Unset = off. |
+| `MIRROR_TOKEN` | — | Required when `MIRROR_URL` is set; sent as `Authorization: Bearer <token>`. The payload is your private conversation — use a long random value and HTTPS off-box. |
+
+Fire-and-forget: 10 s timeout, no retries; a failure is logged and never affects the WhatsApp reply.
 
 ## In-chat commands
 
@@ -92,3 +103,4 @@ A local JSON API so an app on the same machine can talk to the same agent — sa
 | `/model default` | Back to the CLI default. |
 | `/reminders` | List this chat's scheduled reminders with their ids. |
 | `/cancel <id>` | Cancel one reminder. |
+| `/usage` | Token use and estimated cost (as reported by the `claude` CLI), today and the last 7 days, across all chats. |

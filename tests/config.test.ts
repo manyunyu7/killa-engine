@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { forAccountConfig, isWorkspaceName, parseConfig, resolveWorkspace, routeForChat, workspaceFor } from '../src/config.ts'
+import { dmJid, forAccountConfig, isGroupJid, isWorkspaceName, parseConfig, resolveWorkspace, routeForChat, workspaceFor } from '../src/config.ts'
 
 const base = { WORKSPACE_DIR: '/ws', OWNER_NUMBERS: '628111' }
 
@@ -306,5 +306,33 @@ describe('HTTP channel config', () => {
         const { errors } = parseConfig({ ...base, HTTP_PORT: '1', HTTP_TOKEN: 't', HTTP_WORKSPACE: '/gone' }, '/root',
                                        p => p !== '/gone')
         expect(errors).toEqual(['workspace HTTP tidak ditemukan: /gone'])
+    })
+})
+
+describe('mirror config', () => {
+    it('is off unless MIRROR_URL is set', () => {
+        expect(parseConfig(base, '/root').config.mirror).toBeNull()
+    })
+
+    it('reads url and token', () => {
+        const { config, errors } = parseConfig({ ...base, MIRROR_URL: ' https://ghina.test/api/mirror ', MIRROR_TOKEN: ' m ' }, '/root')
+        expect(errors).toEqual([])
+        expect(config.mirror).toEqual({ url: 'https://ghina.test/api/mirror', token: 'm' })
+    })
+
+    it.each([
+        [{ MIRROR_URL: 'https://x.test' }, 'MIRROR_TOKEN wajib'],
+        [{ MIRROR_URL: 'bukan url', MIRROR_TOKEN: 't' }, 'MIRROR_URL tidak valid'],
+        [{ MIRROR_URL: 'ftp://x.test', MIRROR_TOKEN: 't' }, 'MIRROR_URL tidak valid'],
+    ])('reports %j', (env, message) => {
+        expect(parseConfig({ ...base, ...env }, '/root').errors).toEqual([expect.stringContaining(message)])
+    })
+})
+
+describe('jid helpers', () => {
+    it('builds the DM jid and spots groups', () => {
+        expect(dmJid('628111')).toBe('628111@s.whatsapp.net')
+        expect(isGroupJid('123@g.us')).toBe(true)
+        expect(isGroupJid('628111@s.whatsapp.net')).toBe(false)
     })
 })

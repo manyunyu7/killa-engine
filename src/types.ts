@@ -44,6 +44,28 @@ export interface AgentResult {
     sessionId: string | null
     /** Agent loop iterations reported by the CLI — 1 means it answered without a single tool call. */
     turns?: number
+    /** Token and cost accounting from the CLI's JSON result, when it reported any. */
+    usage?: TurnUsage
+}
+
+/** What one `claude -p` run cost, as the CLI reported it. */
+export interface TurnUsage {
+    /** The model that did most of the work (highest cost in modelUsage), when known. */
+    model: string | null
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheCreationTokens: number
+    costUsd: number
+    durationMs: number
+}
+
+/** One persisted usage record (state/usage.json). */
+export interface UsageEntry extends Omit<TurnUsage, 'model'> {
+    at: number
+    /** The per-chat state key the turn ran under. */
+    chatId: string
+    model: string
 }
 
 export interface AgentRun {
@@ -112,6 +134,8 @@ export interface Config {
     telegram: { token: string; chat: string } | null
     /** Local HTTP channel (docs/http-channel.md); null = disabled. */
     http: HttpConfig | null
+    /** Where WhatsApp owner-DM turns are mirrored (MIRROR_URL); null = disabled. */
+    mirror: { url: string; token: string } | null
 }
 
 export interface HttpConfig {

@@ -24,8 +24,10 @@ src/
 │   ├── markers.ts     [[send:]] / [[remind:]] parsing
 │   ├── schedule.ts    reminder specs → fire times
 │   ├── queue.ts       per-chat serialization
+│   ├── usage.ts       token/cost totals, /usage
+│   ├── mirror.ts      WA owner-DM turns → MIRROR_URL (fire-and-forget)
 │   └── ports.ts       the interfaces the outside world enters through
-├── store/             JSON persistence (sessions, models, reminders)
+├── store/             JSON persistence (sessions, models, reminders, usage)
 ├── agent/             the claude CLI bridge (spawn injected)
 ├── whatsapp/          Baileys: connection lifecycle + inbound parsing
 ├── http/              optional local JSON API — another Chat into dispatch

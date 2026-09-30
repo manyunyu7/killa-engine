@@ -24,6 +24,8 @@ const DOCUMENT: Record<string, string> = {
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv',
     '.zip': 'application/zip', '.json': 'application/json',
+    '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg',
+    '.opus': 'audio/ogg', '.wav': 'audio/wav', '.webm': 'audio/webm',
 }
 
 const ext = (file: string) => path.extname(file).toLowerCase()

@@ -13,7 +13,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 
 /** Fixed path: the sudoers rule names this exact binary. */
 export const SUDO_BRIDGE = '/usr/local/bin/killa-claude'
-import type { AgentResult, AgentRun, ProbeResult } from '../types.ts'
+import type { AgentResult, AgentRun, ProbeResult, TurnUsage } from '../types.ts'
 
 export type Spawn = typeof nodeSpawn
 
@@ -72,10 +72,12 @@ export function createClaude({ bin = process.env.CLAUDE_BIN || 'claude',
 
             child.on('close', (code: number | null) => {
                 try {
-                    const parsed = JSON.parse(out) as { result?: string; session_id?: string; num_turns?: number }
+                    const parsed = JSON.parse(out) as CliResult
                     const reply = (parsed.result ?? '').trim()
+                    const usage = parseUsage(parsed, model)
                     finish({ reply: reply || EMPTY_REPLY, sessionId: parsed.session_id ?? sessionId,
-                             ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}) })
+                             ...(typeof parsed.num_turns === 'number' ? { turns: parsed.num_turns } : {}),
+                             ...(usage ? { usage } : {}) })
                 } catch {
                     // A dead --resume target is the common failure here; null
                     // the session so the next message starts fresh.
@@ -114,3 +116,58 @@ export function createClaude({ bin = process.env.CLAUDE_BIN || 'claude',
 }
 
 export type Claude = ReturnType<typeof createClaude>
+
+/** The parts of `claude -p --output-format json` the engine reads. */
+export interface CliResult {
+    result?: string
+    session_id?: string
+    num_turns?: number
+    total_cost_usd?: number
+    duration_ms?: number
+    usage?: {
+        input_tokens?: number
+        output_tokens?: number
+        cache_read_input_tokens?: number
+        cache_creation_input_tokens?: number
+    }
+    modelUsage?: Record<string, {
+        inputTokens?: number
+        outputTokens?: number
+        cacheReadInputTokens?: number
+        cacheCreationInputTokens?: number
+        costUSD?: number
+    }>
+}
+
+const n = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0
+
+/**
+ * Token and cost accounting from one CLI result, or undefined when it carried
+ * none (an old CLI, a crash). `modelUsage` is preferred when present: it
+ * covers every model the run touched (sub-agents, the CLI's own haiku calls),
+ * where `usage` covers only the main loop.
+ */
+export function parseUsage(r: CliResult, requested?: string): TurnUsage | undefined {
+    const models = Object.entries(r.modelUsage ?? {})
+    if (!models.length && !r.usage && r.total_cost_usd === undefined) return undefined
+    const tokens = models.length
+        ? models.reduce((t, [, m]) => ({
+            inputTokens: t.inputTokens + n(m.inputTokens),
+            outputTokens: t.outputTokens + n(m.outputTokens),
+            cacheReadTokens: t.cacheReadTokens + n(m.cacheReadInputTokens),
+            cacheCreationTokens: t.cacheCreationTokens + n(m.cacheCreationInputTokens),
+        }), { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 })
+        : {
+            inputTokens: n(r.usage?.input_tokens),
+            outputTokens: n(r.usage?.output_tokens),
+            cacheReadTokens: n(r.usage?.cache_read_input_tokens),
+            cacheCreationTokens: n(r.usage?.cache_creation_input_tokens),
+        }
+    const main = models.sort(([, a], [, b]) => n(b.costUSD) - n(a.costUSD))[0]?.[0]
+    return {
+        model: main ?? requested ?? null,
+        ...tokens,
+        costUsd: n(r.total_cost_usd) || models.reduce((c, [, m]) => c + n(m.costUSD), 0),
+        durationMs: n(r.duration_ms),
+    }
+}

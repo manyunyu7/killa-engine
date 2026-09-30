@@ -70,6 +70,18 @@ This is the one place the engine sends without being spoken to first, so it is f
 |---|---|
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | If both set, you get a Telegram ping when a WhatsApp session is logged out and needs a re-scan. Telegram (not WhatsApp) on purpose: if WA is down, WA can't tell you, and the engine never initiates WhatsApp messages anyway. |
 
+## HTTP channel (optional)
+
+A local JSON API so an app on the same machine can talk to the same agent — same dispatch, queue, sessions and memory as WhatsApp. Off by default. Full contract: [http-channel.md](http-channel.md).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HTTP_PORT` | — | Port to listen on. Unset = the HTTP channel is disabled. |
+| `HTTP_TOKEN` | — | Required when `HTTP_PORT` is set. Every request must send `Authorization: Bearer <token>`. Use a long random value (`openssl rand -hex 32`). |
+| `HTTP_BIND` | `127.0.0.1` | Address to bind. Keep it on loopback: anyone holding the token drives an agent running with `--dangerously-skip-permissions`. |
+| `HTTP_ACCOUNT` | first of `ACCOUNTS` | Account label HTTP chats are filed under (logs, reminders), and whose workspace they use by default. Must be one of `ACCOUNTS`. |
+| `HTTP_WORKSPACE` | the account's workspace | Workspace every HTTP chat runs in — a managed name or an absolute path. All HTTP users share it (and its memory); each `chatKey` gets its own session and transcript. |
+
 ## In-chat commands
 
 | Command | Effect |

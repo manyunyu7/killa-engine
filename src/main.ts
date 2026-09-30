@@ -16,7 +16,7 @@ import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import 'dotenv/config'
 
-import { forAccountConfig, parseConfig } from './config.ts'
+import { forAccountConfig, isHttpJid, parseConfig } from './config.ts'
 import { createClaude } from './agent/claude.ts'
 import { discoverAliases } from './agent/aliases.ts'
 import { createQueue } from './core/queue.ts'
@@ -30,6 +30,7 @@ import { createModelStore } from './store/models.ts'
 import { createReminderStore, type ReminderFile } from './store/reminders.ts'
 import { createGateway, downloadMedia, mediaOf, saveIncomingMedia } from './whatsapp/connection.ts'
 import { extractText } from './whatsapp/inbound.ts'
+import { createHttpServer } from './http/server.ts'
 import type { ChatSession } from './types.ts'
 import type { Deps } from './core/ports.ts'
 
@@ -120,6 +121,10 @@ const gateway = createGateway({
 // purpose: a number removed from OWNER_NUMBERS must stop receiving.
 setInterval(() => {
     void reminders.tick(async (r, text) => {
+        // An HTTP chat has no socket to push into, and the channel is
+        // request/response only: the reminder is stored and listed (/reminders
+        // over HTTP), but firing it is a logged no-op. Reply-only still holds.
+        if (isHttpJid(r.jid)) { log(r.account, `reminder #${r.id} untuk ${r.jid} tidak dikirim (kanal HTTP)`); return }
         if (!forAccountConfig(config, r.account).ownerNumbers.includes(r.number)) {
             throw new Error(`${r.number} bukan owner lagi`)
         }
@@ -139,6 +144,13 @@ for (const account of config.accounts) {
 }
 console.log(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} — sekarang `
     + new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }))
+
+if (config.http) {
+    const { port, bind, account, workspaceDir } = config.http
+    createHttpServer({ http: config.http, deps })
+        .on('error', (e: Error) => console.error(`http gagal: ${e.message}`))
+        .listen(port, bind, () => log('http', `kanal HTTP di http://${bind}:${port} → ${workspaceDir} (akun ${account})`))
+}
 
 for (const account of config.accounts) {
     gateway.start(account).catch((e: Error) => {

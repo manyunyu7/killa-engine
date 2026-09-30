@@ -156,7 +156,9 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
         telegram: env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID
             ? { token: env.TELEGRAM_BOT_TOKEN, chat: env.TELEGRAM_CHAT_ID }
             : null,
+        http: null,
     }
+    config.http = parseHttp(env, config, workspacesDir, home, exists, errors)
 
     if (!workspaceDir) errors.push('WORKSPACE wajib diisi (nama workspace, atau WORKSPACE_DIR untuk path penuh).')
     else if (!exists(workspaceDir)) errors.push(`workspace tidak ditemukan: ${workspaceDir}`)
@@ -193,6 +195,42 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string,
     return { config, errors }
 }
 
+/**
+ * The local HTTP channel: off unless HTTP_PORT is set, and then it must carry
+ * a token — an unauthenticated port into a --dangerously-skip-permissions
+ * agent is not a configuration, it is an incident.
+ */
+function parseHttp(env: NodeJS.ProcessEnv, config: Config, workspacesDir: string, home: string,
+                   exists: (p: string) => boolean, errors: string[]): Config['http'] {
+    const rawPort = (env.HTTP_PORT ?? '').trim()
+    if (!rawPort) return null
+    const port = Number(rawPort)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        errors.push(`HTTP_PORT tidak valid: ${rawPort}`)
+    }
+    const token = (env.HTTP_TOKEN ?? '').trim()
+    if (!token) errors.push('HTTP_TOKEN wajib diisi kalau HTTP_PORT diset.')
+
+    const account = (env.HTTP_ACCOUNT ?? '').trim() || config.accounts[0]!
+    if (!config.accounts.includes(account)) {
+        errors.push(`HTTP_ACCOUNT "${account}" tidak ada di ACCOUNTS (${config.accounts.join(', ')}).`)
+    }
+    const override = (env.HTTP_WORKSPACE ?? '').trim()
+    const workspaceDir = override
+        ? resolveWorkspace(override, workspacesDir, home)
+        : forAccountConfig(config, account).workspaceDir
+    // Only the override needs checking: the account's own is checked above.
+    if (override && !exists(workspaceDir)) {
+        errors.push(`workspace HTTP tidak ditemukan: ${workspaceDir}`)
+    }
+
+    return { port, bind: (env.HTTP_BIND ?? '').trim() || '127.0.0.1', token, account, workspaceDir }
+}
+
+/** Synthetic jids for HTTP chats start with this; no WhatsApp jid ever does. */
+export const HTTP_JID_PREFIX = 'http:'
+export const isHttpJid = (jid: string): boolean => jid.startsWith(HTTP_JID_PREFIX)
+
 /** The group route for a chat, or null when the chat is not a routed group. */
 export function routeForChat(config: Config, jid: string): GroupRoute | null {
     return config.groups.find(g => g.jid === jid) ?? null
@@ -223,6 +261,10 @@ export function workspaceFor(config: Config, account: string, number: string): s
 /** Where a chat's agent runs: a routed group brings its own workspace and OS user. */
 export function targetFor(config: Config, chat: { account: string; jid: string; number: string }):
         { workspace: string; runAs: string | null } {
+    // HTTP chats have no phone number to route on: they all share one
+    // workspace, so a chatKey that happens to be digits can never land in a
+    // CONTACT_WORKSPACES persona.
+    if (isHttpJid(chat.jid) && config.http) return { workspace: config.http.workspaceDir, runAs: null }
     const route = routeForChat(config, chat.jid)
     return {
         workspace: route?.workspaceDir ?? workspaceFor(config, chat.account, chat.number),

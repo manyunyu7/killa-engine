@@ -201,7 +201,7 @@ export async function deliver(chat: Chat, reply: string, deps: Deps): Promise<vo
         return saved
     }).filter(r => r !== null)
 
-    const chunks = chunk(parsed.text)
+    const chunks = chat.unchunked ? [parsed.text].filter(Boolean) : chunk(parsed.text)
     for (const part of chunks) await chat.sendText(part)
 
     const files = parsed.files.filter(f => deps.fileExists(f))

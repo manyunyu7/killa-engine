@@ -23,6 +23,11 @@ export interface Chat {
     /** Send a file as a document (docx, pdf, xlsx, …), keeping its filename. */
     sendDocument(file: string): Promise<void>
     presence(state: 'composing' | 'paused'): Promise<void>
+    /**
+     * The channel has no message-size limit (HTTP): send the reply as one
+     * text instead of WhatsApp-sized chunks, so the caller gets it back intact.
+     */
+    unchunked?: boolean
 }
 
 export interface Incoming {

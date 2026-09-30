@@ -66,6 +66,15 @@ pm2 save
 
 For headless servers, authenticate the `claude` CLI with a long-lived token created on a machine with a browser (`claude setup-token`).
 
+## Local HTTP channel (optional)
+
+Set `HTTP_PORT` and `HTTP_TOKEN` and the engine also listens on `127.0.0.1` with a small JSON API — for an app on the same machine (the Ghina web app) to chat with the same agent, browse the workspace read-only, and read its git log. HTTP chats go through the same dispatch, queue and session machinery as WhatsApp; each `chatKey` gets its own session, all share one workspace. Contract: [docs/http-channel.md](docs/http-channel.md).
+
+```bash
+curl -s -H "Authorization: Bearer $HTTP_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"chatKey":"user-42","text":"halo"}' http://127.0.0.1:8787/v1/chat
+```
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — zero to chatting in ~10 minutes
@@ -75,6 +84,7 @@ For headless servers, authenticate the `claude` CLI with a long-lived token crea
 - [Deploying to a VPS](docs/deploy-vps.md) — pm2, headless Claude auth, 24/7
 - [Security model](docs/security.md) — read before deploying, honestly stated
 - [Testing](docs/testing.md) — what's covered, and how the fakes work
+- [HTTP channel](docs/http-channel.md) — local JSON API for an app on the same machine
 
 ## Roadmap
 

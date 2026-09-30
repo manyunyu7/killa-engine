@@ -28,6 +28,7 @@ src/
 ├── store/             JSON persistence (sessions, models, reminders)
 ├── agent/             the claude CLI bridge (spawn injected)
 ├── whatsapp/          Baileys: connection lifecycle + inbound parsing
+├── http/              optional local JSON API — another Chat into dispatch
 └── cli/               setup wizard, relink/owner, workspace template
 ```
 
@@ -82,6 +83,6 @@ Every layer fails toward "the WhatsApp connection stays up":
 
 ## What's deliberately absent
 
-- **No HTTP server.** wa-listener's control API exists for a Laravel admin panel; a personal engine doesn't need an attack surface. (A control port may return for multi-account management — roadmap.)
+- **No public HTTP server.** wa-listener's control API exists for a Laravel admin panel; a personal engine doesn't need an attack surface. The one exception is the opt-in, token-guarded, loopback-bound [HTTP channel](http-channel.md) for an app on the same machine — off unless `HTTP_PORT` is set, and it is just another `Chat` into the same dispatch.
 - **No message DB.** WhatsApp is the transcript UI; Claude Code stores its own transcripts; the workspace holds distilled memory. A fourth copy adds nothing.
 - **No cold outbound.** There is no code path that messages a chat the owner didn't just write in. This is the #1 account-ban vector; proactive features will go through a non-WhatsApp channel instead.

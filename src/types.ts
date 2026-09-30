@@ -110,6 +110,19 @@ export interface Config {
     remindersMaxPerDay: number
     timezone: string | null
     telegram: { token: string; chat: string } | null
+    /** Local HTTP channel (docs/http-channel.md); null = disabled. */
+    http: HttpConfig | null
+}
+
+export interface HttpConfig {
+    port: number
+    bind: string
+    /** Bearer token every request must carry. Never logged. */
+    token: string
+    /** Account whose label HTTP chats are filed under (logs, reminders). */
+    account: string
+    /** Workspace every HTTP chat runs in — shared memory across HTTP users. */
+    workspaceDir: string
 }
 
 export type Logger = (account: string, message: string) => void

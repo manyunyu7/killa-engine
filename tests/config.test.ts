@@ -272,3 +272,39 @@ describe('group routes', () => {
         expect(errors.some(e => e.includes('tidak ditemukan'))).toBe(false)
     })
 })
+
+describe('HTTP channel config', () => {
+    it('is off unless HTTP_PORT is set', () => {
+        expect(parseConfig(base, '/root').config.http).toBeNull()
+    })
+
+    it('defaults to loopback, the first account and its workspace', () => {
+        const { config, errors } = parseConfig({ ...base, ACCOUNTS: 'main,kerja', WORKSPACE_KERJA: '/ws-k',
+                                                 HTTP_PORT: '8787', HTTP_TOKEN: ' t0k ' }, '/root')
+        expect(errors).toEqual([])
+        expect(config.http).toEqual({ port: 8787, bind: '127.0.0.1', token: 't0k', account: 'main', workspaceDir: '/ws' })
+    })
+
+    it('honours HTTP_ACCOUNT, HTTP_BIND and HTTP_WORKSPACE', () => {
+        const { config } = parseConfig({ ...base, ACCOUNTS: 'main,kerja', WORKSPACE_KERJA: '/ws-k', HTTP_PORT: '1',
+                                         HTTP_TOKEN: 't', HTTP_ACCOUNT: 'kerja', HTTP_BIND: '0.0.0.0' }, '/root')
+        expect(config.http).toMatchObject({ account: 'kerja', bind: '0.0.0.0', workspaceDir: '/ws-k' })
+        const over = parseConfig({ ...base, HTTP_PORT: '1', HTTP_TOKEN: 't', HTTP_WORKSPACE: '/ws-ghina' }, '/root')
+        expect(over.config.http?.workspaceDir).toBe('/ws-ghina')
+    })
+
+    it.each([
+        [{ HTTP_PORT: '8787' }, 'HTTP_TOKEN wajib'],
+        [{ HTTP_PORT: 'abc', HTTP_TOKEN: 't' }, 'HTTP_PORT tidak valid'],
+        [{ HTTP_PORT: '70000', HTTP_TOKEN: 't' }, 'HTTP_PORT tidak valid'],
+        [{ HTTP_PORT: '8787', HTTP_TOKEN: 't', HTTP_ACCOUNT: 'nope' }, 'HTTP_ACCOUNT "nope"'],
+    ])('reports %j', (env, message) => {
+        expect(parseConfig({ ...base, ...env }, '/root').errors).toEqual([expect.stringContaining(message)])
+    })
+
+    it('reports a missing HTTP_WORKSPACE', () => {
+        const { errors } = parseConfig({ ...base, HTTP_PORT: '1', HTTP_TOKEN: 't', HTTP_WORKSPACE: '/gone' }, '/root',
+                                       p => p !== '/gone')
+        expect(errors).toEqual(['workspace HTTP tidak ditemukan: /gone'])
+    })
+})

@@ -42,6 +42,7 @@ export const testConfig = (over: Partial<Config> = {}): Config => ({
     remindersMaxPerDay: 20,
     timezone: 'Asia/Jakarta',
     telegram: null,
+    http: null,
     ...over,
 })
 

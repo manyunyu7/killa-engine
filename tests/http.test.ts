@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -10,8 +11,8 @@ import { chatKey } from '../src/core/dispatch.ts'
 import { collectingChat, httpHistory, httpIdentity, httpStateKey, isChatKey, isModelName,
          resetHttpChat, runHttpTurn } from '../src/http/chat.ts'
 import { authorized, createHttpServer, intParam } from '../src/http/server.ts'
-import { gitLog, isHidden, listDir, looksBinary, MAX_FILE_BYTES, parseGitLog, readFile,
-         resolveInside, WorkspaceError } from '../src/http/workspace.ts'
+import { deleteFile, gitCommit, gitLog, isHidden, listDir, looksBinary, MAX_FILE_BYTES, MAX_WRITE_BYTES,
+         parseGitLog, readFile, resolveInside, runGit, WorkspaceError, writeFile } from '../src/http/workspace.ts'
 import type { Deps } from '../src/core/ports.ts'
 import type { HttpConfig } from '../src/types.ts'
 import { flush, makeDeps, testConfig } from './helpers.ts'
@@ -209,6 +210,172 @@ describe('workspace files', () => {
     })
 })
 
+describe('workspace writes', () => {
+    const ws = () => {
+        const root = tmp()
+        fs.mkdirSync(path.join(root, '.git'))
+        fs.writeFileSync(path.join(root, 'a.md'), 'lama')
+        return root
+    }
+
+    it('writes a file, creating parent dirs', () => {
+        const root = ws()
+        expect(writeFile(root, 'memory/2026/10-01.md', 'baru')).toBe('memory/2026/10-01.md')
+        expect(fs.readFileSync(path.join(root, 'memory/2026/10-01.md'), 'utf8')).toBe('baru')
+        writeFile(root, 'a.md', 'ganti')
+        expect(fs.readFileSync(path.join(root, 'a.md'), 'utf8')).toBe('ganti')
+    })
+
+    it.each(['../x.md', 'a/../../x', '/etc/x', '', '.', '.git/config', '.git/hooks/pre-commit', '.GIT/config',
+             'sub/.Git/x', '.env', 'x/.env.local', 'node_modules/x.js'])('refuses to write %j', rel => {
+        const root = ws()
+        expect(() => writeFile(root, rel, 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(fs.readdirSync(path.join(root, '.git'))).toEqual([])
+    })
+
+    it('413 over the write cap, counted in UTF-8 bytes', () => {
+        const root = ws()
+        expect(() => writeFile(root, 'big.md', 'é'.repeat(MAX_WRITE_BYTES / 2 + 1)))
+            .toThrow(expect.objectContaining({ status: 413 }))
+        expect(fs.existsSync(path.join(root, 'big.md'))).toBe(false)
+        writeFile(root, 'ok.md', 'a'.repeat(MAX_WRITE_BYTES))
+    })
+
+    it('refuses a directory target', () => {
+        const root = ws()
+        fs.mkdirSync(path.join(root, 'dir'))
+        expect(() => writeFile(root, 'dir', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+    })
+
+    it('refuses to write through a symlinked dir out of the workspace', () => {
+        const root = ws()
+        const outside = tmp()
+        fs.symlinkSync(outside, path.join(root, 'link'))
+        expect(() => writeFile(root, 'link/x.md', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(() => writeFile(root, 'link/new/deep.md', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(fs.readdirSync(outside)).toEqual([])
+    })
+
+    it('refuses a symlink that leads into .git', () => {
+        const root = ws()
+        fs.symlinkSync(path.join(root, '.git'), path.join(root, 'g'))
+        expect(() => writeFile(root, 'g/config', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref')
+        fs.symlinkSync(path.join(root, '.git', 'HEAD'), path.join(root, 'head'))
+        expect(() => writeFile(root, 'head', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(fs.readFileSync(path.join(root, '.git', 'HEAD'), 'utf8')).toBe('ref')
+    })
+
+    it('refuses file symlinks and dangling symlinks that point out', () => {
+        const root = ws()
+        const outside = tmp()
+        fs.writeFileSync(path.join(outside, 'secret'), 's')
+        fs.symlinkSync(path.join(outside, 'secret'), path.join(root, 'file-link'))
+        fs.symlinkSync(path.join(outside, 'nope'), path.join(root, 'dangling'))
+        fs.symlinkSync(path.join(outside, 'nodir'), path.join(root, 'dangling-dir'))
+        expect(() => writeFile(root, 'file-link', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(() => writeFile(root, 'dangling', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(() => writeFile(root, 'dangling-dir/x.md', 'x')).toThrow(expect.objectContaining({ status: 400 }))
+        expect(fs.readdirSync(outside)).toEqual(['secret'])
+        expect(fs.readFileSync(path.join(outside, 'secret'), 'utf8')).toBe('s')
+    })
+
+    it('writes through a symlink that stays inside', () => {
+        const root = ws()
+        fs.symlinkSync(path.join(root, 'a.md'), path.join(root, 'alias.md'))
+        writeFile(root, 'alias.md', 'lewat link')
+        expect(fs.readFileSync(path.join(root, 'a.md'), 'utf8')).toBe('lewat link')
+    })
+
+    it('404 when the workspace itself is gone', () => {
+        expect(() => writeFile(path.join(tmp(), 'gone'), 'a.md', 'x')).toThrow(expect.objectContaining({ status: 404 }))
+    })
+
+    it('deletes a file; refuses dirs, missing files, hidden and outside paths', () => {
+        const root = ws()
+        fs.mkdirSync(path.join(root, 'dir'))
+        deleteFile(root, 'a.md')
+        expect(fs.existsSync(path.join(root, 'a.md'))).toBe(false)
+        expect(() => deleteFile(root, 'a.md')).toThrow(expect.objectContaining({ status: 404 }))
+        expect(() => deleteFile(root, 'dir')).toThrow(expect.objectContaining({ status: 400 }))
+        for (const rel of ['../x', '.git/HEAD', '.env', ''])
+            expect(() => deleteFile(root, rel)).toThrow(expect.objectContaining({ status: 400 }))
+    })
+
+    it('deleting a symlink removes the link, never its target', () => {
+        const root = ws()
+        const outside = tmp()
+        fs.writeFileSync(path.join(outside, 'keep'), 'k')
+        fs.symlinkSync(path.join(outside, 'keep'), path.join(root, 'link'))
+        fs.symlinkSync(outside, path.join(root, 'dirlink'))
+        expect(() => deleteFile(root, 'dirlink/keep')).toThrow(expect.objectContaining({ status: 400 }))
+        deleteFile(root, 'link')
+        expect(fs.existsSync(path.join(root, 'link'))).toBe(false)
+        expect(fs.readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('k')
+    })
+})
+
+const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+const gitRepo = () => {
+    const root = tmp()
+    git(root, 'init', '-q')
+    git(root, 'config', 'user.name', 'Killa')
+    git(root, 'config', 'user.email', 'killa@example.com')
+    git(root, 'config', 'commit.gpgsign', 'false')
+    git(root, 'config', 'core.hooksPath', '/dev/null')
+    return root
+}
+
+describe('git commit', () => {
+    it('adds everything and commits; clean when nothing changed', async () => {
+        const root = gitRepo()
+        expect(await gitCommit(root, 'x')).toEqual({ ok: true, hash: null, clean: true })
+        fs.writeFileSync(path.join(root, 'a.md'), 'satu')
+        const first = await gitCommit(root, '--amend; rm -rf / $(whoami)')
+        expect(first).toEqual({ ok: true, hash: expect.stringMatching(/^[0-9a-f]{40}$/) })
+        expect(git(root, 'log', '-1', '--format=%H %s')).toBe(`${first.hash} --amend; rm -rf / $(whoami)`)
+        expect(await gitCommit(root, 'lagi')).toEqual({ ok: true, hash: null, clean: true })
+        fs.unlinkSync(path.join(root, 'a.md'))
+        expect((await gitCommit(root, 'hapus')).hash).toMatch(/^[0-9a-f]{40}$/)
+        expect(git(root, 'status', '--porcelain')).toBe('')
+    })
+
+    it('400 when the workspace is not a repo, or only a subdir of one', async () => {
+        await expect(gitCommit(tmp(), 'x')).rejects.toMatchObject({ status: 400 })
+        const root = gitRepo()
+        fs.mkdirSync(path.join(root, 'sub'))
+        await expect(gitCommit(path.join(root, 'sub'), 'x')).rejects.toMatchObject({ status: 400 })
+        await expect(gitCommit(path.join(root, 'gone'), 'x')).rejects.toBeDefined()
+    })
+
+    it('throws (-> 500) when a git step fails', async () => {
+        const replies = [[0, ''], [0, ''], [2, 'rusak']] as const
+        let i = 0
+        const root = tmp()
+        const spawn = vi.fn(() => {
+            const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() })
+            const [code, err] = replies[i++]!
+            setImmediate(() => {
+                if (i === 1) child.stdout.emit('data', Buffer.from(fs.realpathSync(root) + '\n'))
+                child.stderr.emit('data', Buffer.from(err))
+                child.emit('close', code)
+            })
+            return child
+        }) as never
+        await expect(gitCommit(root, 'x', spawn)).rejects.toThrow(/diff gagal \(2\): rusak/)
+    })
+
+    it('runGit rejects on spawn error and on timeout', async () => {
+        const spawn = (behave: (c: EventEmitter) => void) => vi.fn(() => {
+            const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() })
+            setImmediate(() => behave(child))
+            return child
+        }) as never
+        await expect(runGit('/ws', ['status'], spawn(c => c.emit('error', new Error('ENOENT'))))).rejects.toThrow('ENOENT')
+        await expect(runGit('/ws', ['status'], spawn(() => {}), 5)).rejects.toThrow('timeout')
+    })
+})
+
 describe('git log', () => {
     it('parses the separator-delimited format', () => {
         const out = 'abc\x1f2026-09-30T10:00:00+07:00\x1fKilla\x1ftulis memori\x1e\ndef\x1f2026-09-29T09:00:00+07:00\x1fHenry\x1finit\x1e\n'
@@ -337,6 +504,48 @@ describe('server', () => {
         const call = await start(httpDeps(), tmp())
         expect((await call('GET', '/v1/git/log?limit=3')).json).toEqual({ commits: [] })
         expect((await call('GET', '/v1/git/log?limit=0')).status).toBe(400)
+    })
+
+    it('PUT / DELETE /v1/workspace/file', async () => {
+        const root = tmp()
+        const call = await start(httpDeps(), root)
+        expect(await call('PUT', '/v1/workspace/file', { path: 'notes/a.md', content: 'isi' }))
+            .toEqual({ status: 200, json: { ok: true, path: 'notes/a.md' } })
+        expect((await call('GET', '/v1/workspace/file?path=notes/a.md')).json.content).toBe('isi')
+        expect((await call('PUT', '/v1/workspace/file', { path: '../x.md', content: 'x' })).status).toBe(400)
+        expect((await call('PUT', '/v1/workspace/file', { path: '.git/config', content: 'x' })).status).toBe(400)
+        expect((await call('PUT', '/v1/workspace/file', { path: 'a.md' })).status).toBe(400)
+        expect((await call('PUT', '/v1/workspace/file', { content: 'x' })).status).toBe(400)
+        expect(await call('PUT', '/v1/workspace/file', { path: 'big.md', content: 'a'.repeat(MAX_WRITE_BYTES + 1) }))
+            .toEqual({ status: 413, json: { error: expect.any(String) } })
+        expect((await call('DELETE', '/v1/workspace/file?path=..%2Fx')).status).toBe(400)
+        expect((await call('DELETE', '/v1/workspace/file')).status).toBe(400)
+        expect((await call('DELETE', '/v1/workspace/file?path=notes')).status).toBe(400)
+        expect(await call('DELETE', '/v1/workspace/file?path=notes/a.md')).toEqual({ status: 200, json: { ok: true } })
+        expect((await call('DELETE', '/v1/workspace/file?path=notes/a.md')).status).toBe(404)
+    })
+
+    it('POST /v1/git/commit: commit, clean, default message, not a repo', async () => {
+        const root = gitRepo()
+        const call = await start(httpDeps(), root)
+        expect(await call('POST', '/v1/git/commit', {})).toEqual({ status: 200, json: { ok: true, hash: null, clean: true } })
+        await call('PUT', '/v1/workspace/file', { path: 'a.md', content: 'satu' })
+        const res = await call('POST', '/v1/git/commit', {})
+        expect(res).toEqual({ status: 200, json: { ok: true, hash: expect.stringMatching(/^[0-9a-f]{40}$/) } })
+        expect(git(root, 'log', '-1', '--format=%s')).toBe('update via ghina')
+        await call('PUT', '/v1/workspace/file', { path: 'b.md', content: 'dua' })
+        await call('PUT', '/v1/workspace/file', { path: 'c.md', content: 'tiga' })
+        const [r1, r2] = await Promise.all([call('POST', '/v1/git/commit', { message: 'catatan: b' }),
+                                            call('POST', '/v1/git/commit', { message: '   ' })])
+        expect(r1.json.hash).toMatch(/^[0-9a-f]{40}$/)
+        expect(r2.json).toEqual({ ok: true, hash: null, clean: true })
+        expect(git(root, 'log', '-1', '--format=%s')).toBe('catatan: b')
+        expect((await call('POST', '/v1/git/commit', { message: 42 })).status).toBe(400)
+        expect((await call('POST', '/v1/git/commit', { message: 'a\0b' })).status).toBe(400)
+        server?.close()
+        const call2 = await start(httpDeps(), tmp())
+        expect(await call2('POST', '/v1/git/commit', { message: 'x' }))
+            .toEqual({ status: 400, json: { error: 'workspace bukan repo git' } })
     })
 
     it('404 for unknown paths, 405 for a known path with the wrong method', async () => {

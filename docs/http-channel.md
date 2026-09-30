@@ -14,7 +14,7 @@ Ghina (Next.js) ──HTTP──► killa-engine :8787 ──► dispatch ──
 - **Base URL:** `http://127.0.0.1:<HTTP_PORT>` (or `HTTP_BIND`).
 - **Auth:** every request, every path: `Authorization: Bearer <HTTP_TOKEN>`. Missing or wrong → `401 {"error":"unauthorized"}` before anything else is looked at (unknown paths included). Compared in constant time.
 - **Bodies:** JSON, max 1 MB. Responses are always JSON.
-- **Errors:** `{"error": "<message>"}` with status `400` (bad input / path outside workspace), `404` (unknown path, or file not found), `405` (known path, wrong method), `413`, `415`, `502` (agent turn failed outright), `500` (internal; message hidden, logged server-side).
+- **Errors:** `{"error": "<message>"}` with status `400` (bad input / path outside workspace), `404` (unknown path, file not found, or workspace dir missing), `405` (known path, wrong method), `413`, `415`, `502` (agent turn failed outright), `500` (internal; message hidden, logged server-side).
 - **`chatKey`:** 1–128 chars of `[A-Za-z0-9._:@-]`. Pick one per Ghina user (e.g. their user id). The engine maps it to a synthetic chat `http:<chatKey>`, so each key has its own Claude session, transcript and reminders, while all keys share one workspace — and therefore one memory. A digits-only key never collides with a WhatsApp chat or owner number.
 
 ## Endpoints
@@ -90,7 +90,26 @@ Directories first, then files, alphabetical. `.git`, `node_modules` and `.env` /
 
 `path` is required. Text only, UTF-8. `413` over 256 KB, `415` for binary (NUL byte in the first 8 KB), `400` for a directory, `404` if missing.
 
-**Path rules (both endpoints):** absolute paths, any `..` segment, NUL bytes, and any segment naming a hidden entry (`.git`, `node_modules`, `.env*`) → `400`. The resolved path — and its realpath, so a symlink cannot escape — must stay inside the workspace, else `400`.
+### `PUT /v1/workspace/file`
+
+Write a UTF-8 text file (create or overwrite). Parent directories are created as needed.
+
+```json
+{ "path": "memory/2026-10-01.md", "content": "…" }
+```
+
+`200 {"ok": true, "path": "memory/2026-10-01.md"}` (the `path` you sent).
+
+- `path` required, non-empty string; `content` required, string (`""` makes an empty file).
+- `413` if `content` is over **512 KB** (UTF-8 bytes). Note: reads stop at 256 KB, so a file written between 256 and 512 KB cannot be read back over `GET /v1/workspace/file`. The 1 MB body cap also applies (JSON escaping counts), also `413`.
+- `400` for a directory target, and for anything the path rules below refuse. Writes are refused **anywhere under `.git/`** (and `node_modules/`, `.env*`), case-insensitively, since `.GIT/config` is `.git/config` on macOS.
+- Symlinks: the deepest existing ancestor of the target is realpath'd and must be inside the workspace (and not inside `.git` etc.). An existing symlink target is written through only if it resolves inside; a dangling symlink is refused (writing would create a file wherever it points).
+
+### `DELETE /v1/workspace/file?path=<rel>`
+
+Delete one file. `200 {"ok": true}`. `path` required; `404` if missing; `400` for a directory (never recursive) or a refused path. A symlink is removed itself — its target is never touched.
+
+**Path rules (all file endpoints):** absolute paths, any `..` segment, NUL bytes, and any segment naming a hidden entry (`.git`, `node_modules`, `.env*`) → `400`. The resolved path — and its realpath, so a symlink cannot escape — must stay inside the workspace, else `400`.
 
 ### `GET /v1/git/log?limit=<n>`
 
@@ -103,6 +122,27 @@ Directories first, then files, alphabetical. `.git`, `node_modules` and `.env` /
 ```
 
 `date` is ISO 8601 author date. Not a git repo, no `git` binary, or git taking over 10 s → `{"commits": []}`. Run via `spawn` with an argument array; no shell.
+
+### `POST /v1/git/commit`
+
+Stage everything and commit: `git add -A`, then `git commit -m <message>`.
+
+```json
+{ "message": "memory: catatan harian" }
+```
+
+`message` optional (string); missing, `null` or blank → `"update via ghina"`. Non-string or containing a NUL byte → `400`.
+
+| Result | Response |
+|---|---|
+| committed | `200 {"ok": true, "hash": "<40-hex HEAD>"}` |
+| nothing to commit | `200 {"ok": true, "hash": null, "clean": true}` |
+| workspace is not a git repo | `400 {"error": "workspace bukan repo git"}` |
+| git failed (no `user.name`/`user.email`, hook rejected, timeout 30 s, …) | `500`, git's stderr logged server-side |
+
+- The workspace must be the repo's **top level**. If it is only a subdirectory of some other repo, that is also `400` — otherwise `add -A` would stage the parent repo's files.
+- Every git call is `spawn('git', [...args])` with an argument array; the message is one argv element and never reaches a shell. Hooks and signing follow the repo's own git config.
+- Commits are serialized per server: concurrent requests run one after another (the later one usually gets `clean: true`).
 
 ## Security notes
 

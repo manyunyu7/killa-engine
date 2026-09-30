@@ -11,11 +11,12 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { httpHistory, isChatKey, isModelName, resetHttpChat, runHttpTurn } from './chat.ts'
-import { gitLog, listDir, readFile, WorkspaceError } from './workspace.ts'
+import { DEFAULT_COMMIT_MESSAGE, deleteFile, gitCommit, gitLog, listDir, readFile, WorkspaceError,
+         writeFile } from './workspace.ts'
 import type { Deps } from '../core/ports.ts'
 import type { HttpConfig } from '../types.ts'
 
-/** Request bodies are a chat message, not an upload. */
+/** Request bodies are a chat message or a text file, not an upload. */
 export const MAX_BODY_BYTES = 1024 * 1024
 
 export interface HttpServerOptions {
@@ -80,6 +81,7 @@ type Handler = (req: http.IncomingMessage, url: URL) => Promise<unknown>
 
 export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpServerOptions): http.Server {
     const ws = cfg.workspaceDir
+    let commitQueue: Promise<unknown> = Promise.resolve()
 
     const routes: Record<string, Handler> = {
         'POST /v1/chat': async req => {
@@ -110,8 +112,32 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpSer
             if (!rel) throw new HttpError(400, 'path wajib')
             return { path: rel, content: readFile(ws, rel) }
         },
+        'PUT /v1/workspace/file': async req => {
+            const body = await readJson(req)
+            if (typeof body.path !== 'string' || !body.path) throw new HttpError(400, 'path wajib')
+            if (typeof body.content !== 'string') throw new HttpError(400, 'content harus string')
+            return { ok: true, path: writeFile(ws, body.path, body.content) }
+        },
+        'DELETE /v1/workspace/file': async (_req, url) => {
+            const rel = url.searchParams.get('path') ?? ''
+            if (!rel) throw new HttpError(400, 'path wajib')
+            deleteFile(ws, rel)
+            return { ok: true }
+        },
         'GET /v1/git/log': async (_req, url) =>
             ({ commits: await gitLog(ws, intParam(url.searchParams.get('limit'), 20, 200), spawn) }),
+        'POST /v1/git/commit': async req => {
+            const { message } = await readJson(req)
+            if (message !== undefined && message !== null && typeof message !== 'string') {
+                throw new HttpError(400, 'message harus string')
+            }
+            if (typeof message === 'string' && message.includes('\0')) throw new HttpError(400, 'message tidak valid')
+            const msg = typeof message === 'string' && message.trim() ? message : DEFAULT_COMMIT_MESSAGE
+            // One commit at a time: two concurrent `git add` would fight over index.lock.
+            const run = commitQueue.then(() => gitCommit(ws, msg, spawn))
+            commitQueue = run.catch(() => {})
+            return run
+        },
     }
     const paths = new Set(Object.keys(routes).map(r => r.split(' ')[1]))
 

@@ -98,8 +98,10 @@ const usage = createUsageStore(
 const deps: Deps = {
     config, sessions, transcripts, models, reminders, usage,
     queue: createQueue((key, e) => console.error(`[queue ${key}]`, e.message)),
-    modelAliases: discoverAliases(() =>
-        execSync(`${process.env.CLAUDE_BIN || 'claude'} --help`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString()),
+    modelAliases: process.env.MODEL_OPTIONS
+        ? process.env.MODEL_OPTIONS.split(',').map(s => s.trim()).filter(Boolean)
+        : discoverAliases(() =>
+            execSync(`${process.env.CLAUDE_BIN || 'claude'} --help`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString()),
     runAgent: claude.runAgent,
     probeModel: claude.probeModel,
     fileExists: fs.existsSync,

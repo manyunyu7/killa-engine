@@ -7,6 +7,7 @@
 
 import type { AgentResult, AgentRun, Config, ProbeResult, Reminder } from '../types.ts'
 import type { ModelStore } from '../store/models.ts'
+import type { NoticeStore } from '../store/notices.ts'
 import type { ReminderStore } from '../store/reminders.ts'
 import type { SessionStore } from '../store/sessions.ts'
 import type { TranscriptStore } from '../store/transcript.ts'
@@ -61,6 +62,8 @@ export interface Deps {
     models: ModelStore
     reminders: ReminderStore
     usage: UsageStore
+    /** Remembered /v1/notify messages awaiting the owner's next turn. */
+    notices: NoticeStore
     queue: Queue
     modelAliases: string[]
     runAgent(run: AgentRun): Promise<AgentResult>

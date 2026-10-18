@@ -30,6 +30,7 @@ import { memoryTouchedSince } from './core/memory-files.ts'
 import { createModelStore } from './store/models.ts'
 import { createReminderStore, type ReminderFile } from './store/reminders.ts'
 import { createUsageStore, type UsageFile } from './store/usage.ts'
+import { createNoticeStore, type NoticeFile } from './store/notices.ts'
 import { createMirror } from './core/mirror.ts'
 import { createGateway, downloadMedia, mediaOf, saveIncomingMedia } from './whatsapp/connection.ts'
 import { extractText } from './whatsapp/inbound.ts'
@@ -96,8 +97,12 @@ const reminders = createReminderStore({
 const usage = createUsageStore(
     jsonFile<UsageFile>(path.join(config.stateDir, 'usage.json'), () => ({ entries: [] })))
 
+// Remembered /v1/notify messages, keyed like sessions (DM canonical form).
+const notices = createNoticeStore(
+    jsonFile<NoticeFile>(path.join(config.stateDir, 'pending-notices.json'), () => ({ seq: 0, chats: {} })))
+
 const deps: Deps = {
-    config, sessions, transcripts, models, reminders, usage,
+    config, sessions, transcripts, models, reminders, usage, notices,
     queue: createQueue((key, e) => console.error(`[queue ${key}]`, e.message)),
     modelAliases: process.env.MODEL_OPTIONS
         ? process.env.MODEL_OPTIONS.split(',').map(s => s.trim()).filter(Boolean)

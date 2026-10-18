@@ -10,6 +10,7 @@ import { createTranscriptStore, type Line } from '../src/store/transcript.ts'
 import { createModelStore } from '../src/store/models.ts'
 import { createReminderStore, type ReminderFile } from '../src/store/reminders.ts'
 import { createUsageStore, type UsageFile } from '../src/store/usage.ts'
+import { createNoticeStore, type NoticeFile } from '../src/store/notices.ts'
 
 /** In-memory JsonFile: same contract as the real one, no fs. */
 export function memFile<T>(initial: T, name = 'mem.json'): JsonFile<T> & { writes: number } {
@@ -82,6 +83,7 @@ export function makeDeps(over: Partial<Deps> = {}): Deps {
         models: createModelStore(memFile<Record<string, string>>({})),
         reminders: createReminderStore({ file: memFile<ReminderFile>({ seq: 0, items: [] }), log: () => {} }),
         usage: createUsageStore(memFile<UsageFile>({ entries: [] })),
+        notices: createNoticeStore(memFile<NoticeFile>({ seq: 0, chats: {} })),
         queue: createQueue(),
         modelAliases: ['opus', 'sonnet'],
         runAgent: vi.fn(async () => ({ reply: 'halo', sessionId: 'sess-1' })),

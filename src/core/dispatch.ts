@@ -12,10 +12,12 @@ import { describe } from './schedule.ts'
 import { flushSession } from './flush.ts'
 import { stamp, stampShort } from './time.ts'
 import { shouldMirror } from './mirror.ts'
+import { noticeBlock } from './notices.ts'
 import { formatUsage, recordUsage, windowStart } from './usage.ts'
 import type { Chat, Deps, Incoming, IncomingFile } from './ports.ts'
 import type { Config } from '../types.ts'
 import type { Line } from '../store/transcript.ts'
+import type { Notice } from '../store/notices.ts'
 
 export const NO_REMINDERS = '⏰ Belum ada reminder. Minta saja: "ingetin aku jam 7 minum obat".'
 
@@ -49,6 +51,7 @@ async function cmdNew(chat: Chat, deps: Deps): Promise<void> {
     deps.sessions.forget(key)
     if (old) await flushSession(old, deps)
     deps.transcripts.clear(key)
+    deps.notices.clear(key)
     await chat.sendText('🆕 Oke, sesi baru dimulai.')
 }
 
@@ -128,9 +131,13 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
     }
     const { workspace, runAs } = targetFor(deps.config, chat)
     const now = deps.now()
+    // Remembered notices go in once: dropped only after the run succeeds, so
+    // a failed turn hands them to the next one instead of losing them.
+    const notices = deps.notices.pending(key)
     const text = buildPrompt(incoming, {
         now,
         briefing: resume ? [] : deps.transcripts.recent(key),
+        notices,
     })
     const userText = incoming.text || tag.trim()
     deps.transcripts.append(key, 'user', userText)
@@ -147,6 +154,7 @@ async function runTurn(chat: Chat, incoming: Incoming, deps: Deps): Promise<void
         model,
     })
     deps.sessions.remember(key, sessionId, { account: chat.account, jid: chat.jid, number: chat.number })
+    if (notices.length) deps.notices.drop(key, notices.map(n => n.id))
     const replyText = parseReply(reply).text
     deps.transcripts.append(key, 'agent', replyText)
     if (usage) recordUsage(deps, key, usage, model)
@@ -227,6 +235,8 @@ export interface PromptContext {
     now: number
     /** Recent lines to brief a fresh session with; empty when resuming. */
     briefing: Line[]
+    /** Remembered notices since the owner last talked; empty when none. */
+    notices?: Notice[]
 }
 
 /**
@@ -235,7 +245,8 @@ export interface PromptContext {
  * is invisible to the user.
  */
 export function buildPrompt(incoming: Incoming, ctx: PromptContext): string {
-    const head = ctx.briefing.length ? `${briefingOf(ctx.briefing)}\n\n` : ''
+    const head = [ctx.briefing.length ? briefingOf(ctx.briefing) : '', noticeBlock(ctx.notices ?? [])]
+        .filter(Boolean).map(b => `${b}\n\n`).join('')
     return `${head}[${stamp(ctx.now)}] ${messageOf(incoming)}`
 }
 
@@ -265,7 +276,7 @@ function fileNote(file: IncomingFile): string {
 }
 
 export function briefingOf(lines: Line[]): string {
-    const body = lines.map(l => `${stampShort(l.at)} ${l.who === 'user' ? 'User' : 'Kamu'}: ${l.text}`).join('\n')
+    const body = lines.map(l => `${stampShort(l.at)} ${l.who === 'user' ? 'User' : l.kind === 'notice' ? 'Kamu (notifikasi)' : 'Kamu'}: ${l.text}`).join('\n')
     return '[Catatan dari engine: ini sesi baru, sesi sebelumnya sudah ditutup. Sebelum menjawab, '
         + 'baca file memori workspace sesuai CLAUDE.md. Potongan percakapan terakhir, supaya nyambung '
         + '(jangan diulang ke user):\n' + body + ']'

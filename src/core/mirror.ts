@@ -13,7 +13,13 @@ import { forAccountConfig, isGroupJid, isHttpJid } from '../config.ts'
 import type { Chat } from './ports.ts'
 import type { Config } from '../types.ts'
 
-export interface MirrorMessage { role: 'user' | 'assistant'; text: string; at: number }
+export interface MirrorMessage {
+    role: 'user' | 'assistant'
+    text: string
+    at: number
+    /** A remembered POST /v1/notify message, not an agent reply. */
+    kind?: 'notice'
+}
 
 export interface MirrorPayload {
     channel: 'wa'

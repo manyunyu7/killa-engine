@@ -997,6 +997,7 @@ describe('POST /v1/notify', () => {
     it.each([
         [{}], [{ text: '' }], [{ text: '   ' }], [{ text: 42 }], [{ text: 'x'.repeat(MAX_NOTIFY_CHARS + 1) }],
         [{ text: 'halo', to: '628999' }], [{ text: 'halo', to: 628111 }], ['not json'],
+        [{ text: 'halo', remember: 'yes' }], [{ text: 'halo', ref: 42 }], [{ text: 'halo', ref: 'x'.repeat(201) }],
     ])('400 on %j, and nothing is sent', async body => {
         const notifier = okNotifier()
         const call = await start(httpDeps(), notifier)
@@ -1112,6 +1113,127 @@ describe('notify helpers', () => {
     })
 
     it('parseNotify returns trimmed text and the first owner', () => {
-        expect(parseNotify(testConfig(), HTTP, { text: ' hai ' })).toEqual({ text: 'hai', number: '628111' })
+        expect(parseNotify(testConfig(), HTTP, { text: ' hai ' })).toEqual({ text: 'hai', number: '628111', remember: false })
+        expect(parseNotify(testConfig(), HTTP, { text: 'hai', remember: true, ref: ' email:abc ' }))
+            .toEqual({ text: 'hai', number: '628111', remember: true, ref: 'email:abc' })
+        expect(parseNotify(testConfig(), HTTP, { text: 'hai', ref: '  ' })).toEqual({ text: 'hai', number: '628111', remember: false })
+    })
+})
+
+describe('POST /v1/notify remember: true', () => {
+    let server: http.Server | null = null
+    afterEach(() => { server?.close(); server = null })
+
+    const DM = '628111@s.whatsapp.net#628111'
+    const prompts = (deps: Deps) => vi.mocked(deps.runAgent).mock.calls.map(c => c[0].text)
+
+    async function start(deps: Deps, notifier: Notifier = { send: vi.fn(async () => ({ id: 'MSG1' })) }) {
+        server = createHttpServer({ http: HTTP, deps, notifier })
+        await new Promise<void>(r => server!.listen(0, '127.0.0.1', r))
+        const { port } = server.address() as AddressInfo
+        return async (method: string, url: string, body?: unknown) => {
+            const res = await fetch(`http://127.0.0.1:${port}${url}`, {
+                method,
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer rahasia' },
+                ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+            })
+            return { status: res.status, json: await res.json() as Record<string, unknown> }
+        }
+    }
+
+    it('without remember: nothing is filed anywhere', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        expect((await call('POST', '/v1/notify', { text: 'halo', remember: false })).json).toEqual({ sent: true, id: 'MSG1' })
+        expect(deps.notices.pending(DM)).toEqual([])
+        expect(deps.transcripts.recent(DM)).toEqual([])
+    })
+
+    it('files a pending note, a transcript line marked notice, and a mirror copy — but runs nothing', async () => {
+        const mirror = vi.fn()
+        const deps = makeDeps({ config: testConfig({ http: HTTP, mirror: { url: 'http://g/m', token: 't' } }), mirror })
+        const enqueue = vi.spyOn(deps.queue, 'enqueue')
+        const call = await start(deps)
+        expect((await call('POST', '/v1/notify', { text: ' 🔴 *Denda ETLE* ', remember: true, ref: 'email:abc' })).json)
+            .toEqual({ sent: true, id: 'MSG1', remembered: true })
+        expect(deps.notices.pending(DM)).toEqual([expect.objectContaining({ text: '🔴 *Denda ETLE*', ref: 'email:abc' })])
+        expect(deps.transcripts.recent(DM)).toEqual([
+            { at: expect.any(Number), who: 'agent', text: '🔴 *Denda ETLE*', kind: 'notice' }])
+        expect(mirror).toHaveBeenCalledWith({ channel: 'wa', number: '628111', messages: [
+            { role: 'assistant', text: '🔴 *Denda ETLE*', at: expect.any(Number), kind: 'notice' }] })
+        expect(deps.runAgent).not.toHaveBeenCalled()
+        expect(enqueue).not.toHaveBeenCalled()
+        expect(deps.sessions.all()).toEqual({})
+        expect((await call('GET', '/v1/chat/history?chatKey=wa:628111')).json.messages).toEqual([
+            { at: expect.any(Number), who: 'agent', text: '🔴 *Denda ETLE*', kind: 'notice' }])
+    })
+
+    it('files nothing when the send failed', async () => {
+        const deps = httpDeps()
+        const call = await start(deps, { send: vi.fn(async () => null) })
+        expect((await call('POST', '/v1/notify', { text: 'halo', remember: true })).status).toBe(503)
+        expect(deps.notices.pending(DM)).toEqual([])
+        expect(deps.transcripts.recent(DM)).toEqual([])
+    })
+
+    it('is shown once on the owner\'s next Ghina turn (wa: key), then cleared', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        await call('POST', '/v1/notify', { text: 'Denda ETLE Rp500.000', remember: true, ref: 'email:abc' })
+        await call('POST', '/v1/notify', { text: 'Tagihan listrik', remember: true })
+        await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'itu dendanya kapan?' })
+        await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'oke' })
+        const [first, second] = prompts(deps)
+        expect(first).toMatch(/\[Konteks — notifikasi yang Killa kirim sejak obrolan terakhir \(bukan pesan dari pengguna\):\n- .+ · Denda ETLE Rp500\.000 \(ref email:abc\)\n- .+ · Tagihan listrik\]\n\n\[.+\] itu dendanya kapan\?$/)
+        expect(second).not.toContain('Konteks — notifikasi')
+        expect(deps.notices.pending(DM)).toEqual([])
+    })
+
+    it('is shown on the owner\'s next WhatsApp turn too', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        await call('POST', '/v1/notify', { text: 'Paket sampai', remember: true })
+        await dispatch(fakeChat(), { text: 'makasih', hasFile: false, file: null }, deps)
+        await deps.queue.enqueue(DM, async () => {})
+        expect(prompts(deps)[0]).toContain('· Paket sampai]')
+        expect(deps.notices.pending(DM)).toEqual([])
+    })
+
+    it('is not shown to any other chatKey, and stays pending for the owner', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        await call('POST', '/v1/notify', { text: 'Paket sampai', remember: true })
+        await call('POST', '/v1/chat', { chatKey: 'email-triage', text: 'triage' })
+        await call('POST', '/v1/chat', { chatKey: 'email-cron', text: 'cron' })
+        expect(prompts(deps).some(p => p.includes('Paket sampai'))).toBe(false)
+        expect(deps.notices.pending(DM)).toHaveLength(1)
+    })
+
+    it('slash commands do not consume the notes; /new clears them', async () => {
+        const deps = httpDeps()
+        const call = await start(deps)
+        await call('POST', '/v1/notify', { text: 'Paket sampai', remember: true })
+        for (const text of ['/model', '/reminders', '/usage', '/cancel 9']) {
+            await dispatch(fakeChat(), { text, hasFile: false, file: null }, deps)
+        }
+        await call('GET', '/v1/model?chatKey=wa:628111')
+        expect(deps.notices.pending(DM)).toHaveLength(1)
+        await call('POST', '/v1/chat/new', { chatKey: 'wa:628111' })
+        expect(deps.notices.pending(DM)).toEqual([])
+        await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'halo' })
+        expect(prompts(deps)[0]).not.toContain('Paket sampai')
+    })
+
+    it('a turn that failed keeps the notes for the next one', async () => {
+        const runAgent = vi.fn<Deps['runAgent']>()
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockResolvedValue({ reply: 'ok', sessionId: 's' })
+        const deps = httpDeps({ runAgent })
+        const call = await start(deps)
+        await call('POST', '/v1/notify', { text: 'Paket sampai', remember: true })
+        expect((await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'a' })).status).toBe(502)
+        await call('POST', '/v1/chat', { chatKey: 'wa:628111', text: 'b' })
+        expect(prompts(deps).map(p => p.includes('Paket sampai'))).toEqual([true, true])
+        expect(deps.notices.pending(DM)).toEqual([])
     })
 })

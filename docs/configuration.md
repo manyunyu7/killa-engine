@@ -51,7 +51,7 @@ A workspace you keep outside the root (a git repo, say) is fully supported — p
 | `MEMORY_FLUSH_MIN_TURNS` | `4` | A session with fewer user turns is dropped without a flush. The flush is also skipped when a memory file in the workspace (root or `memory/`) already changed during the session — the agent wrote things down on its own. |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard cap per agent run; on expiry the child is killed and the chat gets a "took too long" reply. Big multi-step tasks may need more. |
 | `CLAUDE_BIN` | `claude` | Path to the CLI if not on the service user's PATH (typical under pm2 + nvm: `/home/killa/.nvm/versions/node/v22.x.x/bin/claude`). |
-| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map), `chat-transcripts.json` (the last 20 lines per chat, for briefing a fresh session), `reminders.json`, `usage.json` (per-run token/cost log, last 90 days — `/usage`, `GET /v1/usage`) and `media/` (incoming attachments). Deleting it forgets which session each chat was in and what was last said — harmless beyond that. |
+| `STATE_DIR` | `./state` | Holds `chat-sessions.json` (chat ↔ Claude-session map), `chat-transcripts.json` (the last 20 lines per chat, for briefing a fresh session), `reminders.json`, `usage.json` (per-run token/cost log, last 90 days — `/usage`, `GET /v1/usage`), `pending-notices.json` (`/v1/notify` messages sent with `remember: true`, waiting for the owner's next turn; max 20 per chat, 7 days) and `media/` (incoming attachments). Deleting it forgets which session each chat was in and what was last said — harmless beyond that. |
 
 ## Reminders
 

@@ -135,7 +135,8 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn, notifier 
         'GET /v1/chat/history': async (_req, url) => {
             const key = keyOf(url.searchParams.get('chatKey'))
             const limit = intParam(url.searchParams.get('limit'), 20, 1000)
-            return { messages: httpHistory(cfg, deps, key, limit).map(({ at, who, text }) => ({ at, who, text })) }
+            return { messages: httpHistory(cfg, deps, key, limit)
+                .map(({ at, who, text, kind }) => (kind ? { at, who, text, kind } : { at, who, text })) }
         },
         'GET /v1/reminders': async (_req, url) =>
             ({ reminders: httpReminders(cfg, deps, keyOf(url.searchParams.get('chatKey'))) }),
@@ -155,9 +156,9 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn, notifier 
             return { ok: true, model: choice.model }
         },
         'POST /v1/notify': async req => {
-            const { text, number } = parseNotify(deps.config, cfg, await readJson(req))
+            const parsed = parseNotify(deps.config, cfg, await readJson(req))
             if (!notifyLimit.take()) throw new HttpError(429, 'rate_limited')
-            return sendNotify(cfg, notifier, deps.log, text, number)
+            return sendNotify(cfg, notifier, deps, parsed)
         },
         'GET /v1/usage': async (_req, url) => {
             const days = intParam(url.searchParams.get('days'), 7, MAX_USAGE_DAYS)

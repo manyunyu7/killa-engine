@@ -13,10 +13,12 @@ export interface Line {
     at: number
     who: 'user' | 'agent'
     text: string
+    /** Set on a line the engine sent on its own (POST /v1/notify), not a reply. */
+    kind?: 'notice'
 }
 
 export interface TranscriptStore {
-    append(key: string, who: Line['who'], text: string): void
+    append(key: string, who: Line['who'], text: string, kind?: Line['kind']): void
     recent(key: string): Line[]
     clear(key: string): void
 }
@@ -29,11 +31,12 @@ export function createTranscriptStore(file: JsonFile<Record<string, Line[]>>,
                                       now: () => number = Date.now): TranscriptStore {
     const data = file.read()
     return {
-        append(key, who, text) {
+        append(key, who, text, kind) {
             const clean = text.replace(/\s+/g, ' ').trim()
             if (!clean) return
             const lines = data[key] ?? (data[key] = [])
-            lines.push({ at: now(), who, text: clean.length > KEEP_CHARS ? `${clean.slice(0, KEEP_CHARS)}…` : clean })
+            lines.push({ at: now(), who, text: clean.length > KEEP_CHARS ? `${clean.slice(0, KEEP_CHARS)}…` : clean,
+                         ...(kind ? { kind } : {}) })
             if (lines.length > KEEP_LINES) lines.splice(0, lines.length - KEEP_LINES)
             file.write(data)
         },

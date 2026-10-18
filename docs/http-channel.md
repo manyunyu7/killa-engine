@@ -78,6 +78,8 @@ The last `n` lines of the engine's rolling transcript for that chat (default 20)
 ] }
 ```
 
+A message the engine sent on its own through `POST /v1/notify` with `remember: true` appears as `{ "at": …, "who": "agent", "text": "…", "kind": "notice" }`; `kind` is absent on every other line, so an old client simply shows it as an agent message.
+
 This is the engine's session-briefing log, not a message archive: at most **20 lines** per chat, each **truncated to 240 chars** with whitespace collapsed, cleared by `/new`. `at` is epoch milliseconds. Ghina should keep its own full history if it needs one.
 
 ### `GET /v1/reminders?chatKey=<key>`
@@ -235,17 +237,37 @@ Stage everything and commit: `git add -A`, then `git commit -m <message>`.
 Push one plain WhatsApp message to the owner — for app alerts (an urgent email, a digest). This is **not** a chat: no session, transcript, queue, model choice or reminder is read or written, no agent turn runs, and nothing is mirrored. A reply from the owner is an ordinary DM, handled like any other.
 
 ```json
-{ "text": "🔴 *Denda ETLE — Korlantas*\nbayar sebelum 25 Okt.", "to": "6281234567890" }
+{ "text": "🔴 *Denda ETLE — Korlantas*\nbayar sebelum 25 Okt.", "to": "6281234567890",
+  "remember": true, "ref": "email:18f2c0a9" }
 ```
 
 - `text` — required, trimmed, at most **4,000** characters after trimming. Sent as-is (WhatsApp markdown works), in one message.
 - `to` — optional. Defaults to the **first** `OWNER_NUMBERS` entry of `HTTP_ACCOUNT`; if given, it must be one of that account's owners (non-digits are stripped, so `+62 812…` is fine). Anything else → `400`.
 - Sent through `HTTP_ACCOUNT`'s WhatsApp socket to the owner's DM jid (`<number>@s.whatsapp.net`).
-- `200 {"sent": true, "id": "<WhatsApp message id>"}` (`id` omitted if the socket returned none).
+- `remember` — optional boolean (default `false`). See below.
+- `ref` — optional string, ≤ 200 chars, e.g. `email:<id>`, so the agent can look the details up. Only used with `remember`.
+- `200 {"sent": true, "id": "<WhatsApp message id>"}` (`id` omitted if the socket returned none; `"remembered": true` added when it was filed).
 - `503 {"error": "wa_not_connected"}` when that account's socket is not open (reconnecting, logged out, not paired yet). Nothing is queued — retry later.
 - `502 {"error": "wa_send_failed"}` when the socket threw mid-send.
 - `429 {"error": "rate_limited"}` past **30 sends per sliding minute** (per process). Rejected bodies (`400`) don't count.
 - One log line per attempt: recipient number, length and message id — never the text.
+
+**`remember: true` — the owner's conversation knows what was sent.** Only after a successful send, the notice is filed into the owner's DM conversation: the same state the WhatsApp DM and a `wa:<number>` HTTP chat share (`<number>@s.whatsapp.net#<number>`). Still no agent run, no session, no queue.
+
+- **Pending note** `{at, text, ref?}` — `text` truncated to 1,000 chars. Persisted in `STATE_DIR/pending-notices.json` (survives a restart). At most **20** per chat (oldest dropped); notes older than **7 days** expire unseen.
+- **On the owner's next agent turn in that conversation** — a WhatsApp DM message, or `POST /v1/chat` with `chatKey: "wa:<number>"` — every pending note is put in front of the message, once, then dropped:
+
+  ```
+  [Konteks — notifikasi yang Killa kirim sejak obrolan terakhir (bukan pesan dari pengguna):
+  - Sab 18 Okt, 21:05 · 🔴 *Denda ETLE — Korlantas* … (ref email:18f2c0a9)
+  - Sab 18 Okt, 22:40 · Tagihan PLN …]
+
+  [Sab 18 Okt 2026, 22:41 WIB] itu dendanya kapan jatuh tempo?
+  ```
+
+  On a fresh session it comes after the usual briefing. Notes are dropped only once the turn's agent run succeeded; a failed turn leaves them for the next one. Any other chatKey (`email-triage`, `email-cron`, `user-42`, …) never sees them. Slash commands (`/model`, `/reminders`, `/usage`, `/cancel`) don't consume them; `/new` (either side) clears them.
+- **Transcript line** `{who: "agent", kind: "notice"}` in the conversation's transcript — so it shows in `GET /v1/chat/history?chatKey=wa:<number>` and, labelled *Kamu (notifikasi)*, in the briefing of a fresh session. Same 240-char cap as every transcript line.
+- **Mirror copy** — if the mirror hook is on, one `{"channel":"wa","number":…,"messages":[{"role":"assistant","text":…,"at":…,"kind":"notice"}]}` POST, so Ghina can show it in the WhatsApp side of the conversation. Ghina is usually the sender too: treat `kind: "notice"` as something it may already have and de-duplicate.
 
 ```bash
 curl -s -H "Authorization: Bearer $HTTP_TOKEN" -H 'Content-Type: application/json' \
@@ -268,6 +290,7 @@ Content-Type: application/json
 ```
 
 - Sent after the reply has gone out on WhatsApp. `user.text` is the inbound text (or `[gambar]` / `[<filename>]` for a file without caption); `assistant.text` is the reply with `[[send:]]`/`[[remind:]]` markers stripped (engine notices like `⏰ Diingetin` are not included). `at` is epoch ms.
+- One exception to "a turn": a `POST /v1/notify` with `remember: true` sends a single `assistant` message with `"kind": "notice"` (see that endpoint).
 - Only agent turns in an owner's **DM**. Not mirrored: slash commands, group chats, and every HTTP-channel turn — including `wa:` turns, which Ghina already has.
 - Fire-and-forget: 10 s timeout, no retry, no queue. A failure (unreachable, timeout, non-2xx) is one log line; it never delays or breaks the WhatsApp reply. Ghina should treat it as best-effort and de-duplicate if it needs to.
 

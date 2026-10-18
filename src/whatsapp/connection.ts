@@ -38,6 +38,8 @@ export interface Gateway {
     /** Chat handle for an already-known conversation, or null if offline. */
     chatFor(account: string, jid: string, number: string): Chat | null
     state(account: string): AccountState | undefined
+    /** One plain text to `jid`, outside any chat flow; null when the account is offline. */
+    sendNotice(account: string, jid: string, text: string): Promise<{ id?: string } | null>
 }
 
 export interface GatewayOptions {
@@ -178,6 +180,12 @@ export function createGateway({ config, log, notify, onMessage }: GatewayOptions
         chatFor: (account, jid, number) =>
             sockets[account] && states[account]?.connected ? makeChat(account, jid, number) : null,
         state: account => states[account],
+        sendNotice: async (account, jid, text) => {
+            const sock = sockets[account]
+            if (!sock || !states[account]?.connected) return null
+            const sent = await sock.sendMessage(jid, { text })
+            return sent?.key.id ? { id: sent.key.id } : {}
+        },
     }
 }
 

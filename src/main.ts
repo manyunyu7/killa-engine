@@ -6,7 +6,8 @@
  *
  * Deliberate properties:
  *  - OWNER-ONLY. Messages from anyone outside OWNER_NUMBERS are ignored.
- *  - REPLY-ONLY, with reminders as the single, fenced-in exception.
+ *  - REPLY-ONLY, with two fenced-in exceptions, both owner-only: reminders
+ *    and the HTTP channel's /v1/notify.
  *  - SERIALIZED per chat, so replies can't arrive out of order.
  */
 
@@ -134,7 +135,7 @@ const gateway = createGateway({
     },
 })
 
-// The one outbound the engine initiates. Owner check repeated here on
+// Reminders: one of the two outbounds the engine initiates (/v1/notify is the other). Owner check repeated here on
 // purpose: a number removed from OWNER_NUMBERS must stop receiving.
 setInterval(() => {
     void reminders.tick(async (r, text) => {
@@ -168,7 +169,9 @@ if (config.mirror) log('mirror', `giliran DM owner WhatsApp di-mirror ke ${new U
 
 if (config.http) {
     const { port, bind, account, workspaceDir } = config.http
-    createHttpServer({ http: config.http, deps })
+    // /v1/notify reaches WhatsApp through this and nothing else: no dispatch,
+    // no session, no queue — the gateway just sends one text.
+    createHttpServer({ http: config.http, deps, notifier: { send: gateway.sendNotice } })
         .on('error', (e: Error) => console.error(`http gagal: ${e.message}`))
         .listen(port, bind, () => log('http', `kanal HTTP di http://${bind}:${port} → ${workspaceDir} (akun ${account})`))
 }

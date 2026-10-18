@@ -1,5 +1,6 @@
 /**
- * Reminder store — the only outbound the engine ever initiates.
+ * Reminder store — one of the two outbounds the engine initiates (the other is
+ * the HTTP channel's owner-only /v1/notify).
  *
  * Fenced in deliberately (see docs/configuration.md): owner numbers only,
  * into a chat that already exists, capped per day. Delivery is injected as

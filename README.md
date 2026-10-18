@@ -23,7 +23,7 @@ Practical consequences:
 ## Design principles
 
 - **Owner-only.** Messages from numbers outside `OWNER_NUMBERS` are ignored silently. This is a personal agent, not a public bot.
-- **Reply-only.** The engine only sends into chats the owner just wrote in — no cold outbound. Unsolicited sending is the #1 cause of WhatsApp account bans; don't add it.
+- **Reply-only.** The engine only sends into chats the owner just wrote in — no cold outbound. Unsolicited sending is the #1 cause of WhatsApp account bans; don't add it. The two fenced exceptions both go only to owner numbers: reminders the owner scheduled, and `POST /v1/notify` (rate-limited) on the local HTTP channel.
 - **Serialized per chat.** One agent run at a time per conversation; replies can't arrive out of order.
 - **Sessions with amnesia on purpose.** Each chat resumes its Claude session; after 30 idle minutes (configurable) the next message starts fresh. Send `/new` to reset manually.
 
@@ -68,7 +68,7 @@ For headless servers, authenticate the `claude` CLI with a long-lived token crea
 
 ## Local HTTP channel (optional)
 
-Set `HTTP_PORT` and `HTTP_TOKEN` and the engine also listens on `127.0.0.1` with a small JSON API — for an app on the same machine (the Ghina web app) to chat with the same agent, browse the workspace read-only, and read its git log. HTTP chats go through the same dispatch, queue and session machinery as WhatsApp; each `chatKey` gets its own session, all share one workspace. Contract: [docs/http-channel.md](docs/http-channel.md).
+Set `HTTP_PORT` and `HTTP_TOKEN` and the engine also listens on `127.0.0.1` with a small JSON API — for an app on the same machine (the Ghina web app) to chat with the same agent, browse the workspace read-only, read its git log, and push an alert to the owner's WhatsApp (`POST /v1/notify`, no session involved). HTTP chats go through the same dispatch, queue and session machinery as WhatsApp; each `chatKey` gets its own session, all share one workspace. Contract: [docs/http-channel.md](docs/http-channel.md).
 
 ```bash
 curl -s -H "Authorization: Bearer $HTTP_TOKEN" -H 'Content-Type: application/json' \

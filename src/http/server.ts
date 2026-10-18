@@ -14,6 +14,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { cancelHttpReminder, chatIdentity, ChatKeyForbidden, httpHistory, httpModel, httpReminders, isChatKey,
          isModelName, resetHttpChat, runHttpTurn, setHttpModel } from './chat.ts'
 import { contentTypeFor, MAX_CHAT_BODY_BYTES, mediaRoots, parseMedia, resolveMedia, saveMedia } from './media.ts'
+import { NOTIFY_PER_MINUTE, NotifyError, parseNotify, rateLimiter, sendNotify, type Notifier } from './notify.ts'
 import { summarizeUsage, windowStart } from '../core/usage.ts'
 import { DEFAULT_COMMIT_MESSAGE, deleteFile, gitCommit, gitLog, listDir, readFile, WorkspaceError,
          writeFile } from './workspace.ts'
@@ -27,6 +28,8 @@ export interface HttpServerOptions {
     http: HttpConfig
     deps: Deps
     spawn?: typeof nodeSpawn
+    /** WhatsApp sender for /v1/notify; absent = always 503 wa_not_connected. */
+    notifier?: Notifier
 }
 
 /**
@@ -98,9 +101,10 @@ type Handler = (req: http.IncomingMessage, url: URL) => Promise<unknown>
 
 export const MAX_USAGE_DAYS = 90
 
-export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpServerOptions): http.Server {
+export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn, notifier }: HttpServerOptions): http.Server {
     const ws = cfg.workspaceDir
     let commitQueue: Promise<unknown> = Promise.resolve()
+    const notifyLimit = rateLimiter(NOTIFY_PER_MINUTE, deps.now)
 
     /** A syntactically valid chatKey that also names a chat this caller may use (403 for a foreign `wa:`). */
     const keyOf = (v: unknown): string => {
@@ -149,6 +153,11 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpSer
             const choice = await setHttpModel(cfg, deps, key, body.model)
             if (!choice.ok) throw new HttpError(400, choice.message)
             return { ok: true, model: choice.model }
+        },
+        'POST /v1/notify': async req => {
+            const { text, number } = parseNotify(deps.config, cfg, await readJson(req))
+            if (!notifyLimit.take()) throw new HttpError(429, 'rate_limited')
+            return sendNotify(cfg, notifier, deps.log, text, number)
         },
         'GET /v1/usage': async (_req, url) => {
             const days = intParam(url.searchParams.get('days'), 7, MAX_USAGE_DAYS)
@@ -217,7 +226,7 @@ export function createHttpServer({ http: cfg, deps, spawn = nodeSpawn }: HttpSer
                 else send(res, 200, out)
             } catch (e) {
                 const status = e instanceof HttpError || e instanceof WorkspaceError || e instanceof ChatKeyForbidden
-                    ? e.status : 500
+                    || e instanceof NotifyError ? e.status : 500
                 if (status === 500) deps.log(cfg.account, `http ${req.method} ${url.pathname}: ${(e as Error).message}`)
                 send(res, status, { error: status === 500 ? 'internal error' : (e as Error).message })
             }

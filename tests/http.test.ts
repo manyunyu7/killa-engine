@@ -13,6 +13,7 @@ import { cancelHttpReminder, chatIdentity, ChatKeyForbidden, collectingChat, htt
 import { ALLOWED_MIME_TYPES, contentTypeFor, MAX_MEDIA_BYTES, MAX_SERVE_BYTES, mediaRoots, parseMedia, resolveMedia,
          safeName, saveMedia } from '../src/http/media.ts'
 import { authorized, createHttpServer, intParam } from '../src/http/server.ts'
+import { MAX_NOTIFY_CHARS, NOTIFY_PER_MINUTE, parseNotify, rateLimiter, type Notifier } from '../src/http/notify.ts'
 import { deleteFile, gitCommit, gitLog, isHidden, listDir, looksBinary, MAX_FILE_BYTES, MAX_WRITE_BYTES,
          parseGitLog, readFile, resolveInside, runGit, WorkspaceError, writeFile } from '../src/http/workspace.ts'
 import type { Deps } from '../src/core/ports.ts'
@@ -963,5 +964,154 @@ describe('server', () => {
     it('allows a request to run as long as an agent turn', () => {
         const s = createHttpServer({ http: HTTP, deps: httpDeps() })
         expect(s.requestTimeout).toBeGreaterThan(testConfig().agentTimeoutMs)
+    })
+})
+
+describe('POST /v1/notify', () => {
+    let server: http.Server | null = null
+    afterEach(() => { server?.close(); server = null })
+
+    const okNotifier = () => ({ send: vi.fn(async () => ({ id: 'MSG1' })) })
+
+    async function start(deps: Deps, notifier?: Notifier, cfg: HttpConfig = HTTP) {
+        server = createHttpServer({ http: cfg, deps, ...(notifier ? { notifier } : {}) })
+        await new Promise<void>(r => server!.listen(0, '127.0.0.1', r))
+        const { port } = server.address() as AddressInfo
+        return async (body: unknown, token: string | null = 'rahasia') => {
+            const res = await fetch(`http://127.0.0.1:${port}/v1/notify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: typeof body === 'string' ? body : JSON.stringify(body),
+            })
+            return { status: res.status, json: await res.json() as Record<string, unknown> }
+        }
+    }
+
+    it.each([null, 'salah'])('401 on token %j, and nothing is sent', async token => {
+        const notifier = okNotifier()
+        const call = await start(httpDeps(), notifier)
+        expect(await call({ text: 'halo' }, token)).toEqual({ status: 401, json: { error: 'unauthorized' } })
+        expect(notifier.send).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        [{}], [{ text: '' }], [{ text: '   ' }], [{ text: 42 }], [{ text: 'x'.repeat(MAX_NOTIFY_CHARS + 1) }],
+        [{ text: 'halo', to: '628999' }], [{ text: 'halo', to: 628111 }], ['not json'],
+    ])('400 on %j, and nothing is sent', async body => {
+        const notifier = okNotifier()
+        const call = await start(httpDeps(), notifier)
+        expect((await call(body)).status).toBe(400)
+        expect(notifier.send).not.toHaveBeenCalled()
+    })
+
+    it('accepts exactly the cap after trimming', async () => {
+        const notifier = okNotifier()
+        const call = await start(httpDeps(), notifier)
+        expect((await call({ text: `  ${'x'.repeat(MAX_NOTIFY_CHARS)}\n` })).status).toBe(200)
+        expect(notifier.send).toHaveBeenCalledWith('main', '628111@s.whatsapp.net', 'x'.repeat(MAX_NOTIFY_CHARS))
+    })
+
+    it('503 wa_not_connected when the socket is not open, or there is no gateway at all', async () => {
+        const down = { send: vi.fn(async () => null) }
+        expect(await (await start(httpDeps(), down))({ text: 'halo' }))
+            .toEqual({ status: 503, json: { error: 'wa_not_connected' } })
+        server!.close()
+        expect(await (await start(httpDeps()))({ text: 'halo' }))
+            .toEqual({ status: 503, json: { error: 'wa_not_connected' } })
+    })
+
+    it('502 when the socket throws mid-send', async () => {
+        const call = await start(httpDeps(), { send: vi.fn(async () => { throw new Error('socket closed') }) })
+        expect(await call({ text: 'halo' })).toEqual({ status: 502, json: { error: 'wa_send_failed' } })
+    })
+
+    it('sends the trimmed text to the first owner\'s DM jid and returns the message id', async () => {
+        const notifier = okNotifier()
+        const config = testConfig({ http: HTTP, ownerNumbers: ['628111', '628222'] })
+        const call = await start(makeDeps({ config }), notifier)
+        expect(await call({ text: '  🔴 *Denda ETLE*\nbayar  ' }))
+            .toEqual({ status: 200, json: { sent: true, id: 'MSG1' } })
+        expect(notifier.send).toHaveBeenCalledWith('main', '628111@s.whatsapp.net', '🔴 *Denda ETLE*\nbayar')
+    })
+
+    it('`to` may pick another owner of HTTP_ACCOUNT (digits normalized)', async () => {
+        const notifier = okNotifier()
+        const config = testConfig({ http: HTTP, ownerNumbers: ['628111', '628222'] })
+        const call = await start(makeDeps({ config }), notifier)
+        expect((await call({ text: 'halo', to: '+62 822-29' })).status).toBe(400)
+        expect((await call({ text: 'halo', to: '+62 822-2' })).status).toBe(200)
+        expect(notifier.send).toHaveBeenLastCalledWith('main', '628222@s.whatsapp.net', 'halo')
+    })
+
+    it('uses the owners of HTTP_ACCOUNT, not the global list', async () => {
+        const notifier = okNotifier()
+        const http2 = { ...HTTP, account: 'kerja' }
+        const config = testConfig({ http: http2, accounts: ['main', 'kerja'],
+                                    perAccount: { kerja: { ownerNumbers: ['628333'] } } })
+        const call = await start(makeDeps({ config }), notifier, http2)
+        expect((await call({ text: 'halo' })).json).toEqual({ sent: true, id: 'MSG1' })
+        expect(notifier.send).toHaveBeenCalledWith('kerja', '628333@s.whatsapp.net', 'halo')
+    })
+
+    it('returns {sent:true} without id when the socket gave none', async () => {
+        const call = await start(httpDeps(), { send: vi.fn(async () => ({})) })
+        expect(await call({ text: 'halo' })).toEqual({ status: 200, json: { sent: true } })
+    })
+
+    it('touches no session, transcript, queue, reminder or agent', async () => {
+        const deps = httpDeps()
+        const enqueue = vi.spyOn(deps.queue, 'enqueue')
+        const writes = [vi.spyOn(deps.sessions, 'remember'), vi.spyOn(deps.sessions, 'forget'),
+                        vi.spyOn(deps.transcripts, 'append'), vi.spyOn(deps.models, 'set'),
+                        vi.spyOn(deps.reminders, 'add'), vi.spyOn(deps.usage, 'record')]
+        const call = await start(deps, okNotifier())
+        expect((await call({ text: 'halo' })).status).toBe(200)
+        expect(deps.runAgent).not.toHaveBeenCalled()
+        expect(enqueue).not.toHaveBeenCalled()
+        for (const w of writes) expect(w).not.toHaveBeenCalled()
+        expect(deps.sessions.all()).toEqual({})
+        expect(deps.transcripts.recent('628111@s.whatsapp.net#628111')).toEqual([])
+    })
+
+    it('logs one line per send, never the text', async () => {
+        const log = vi.fn()
+        const call = await start(httpDeps({ log }), okNotifier())
+        await call({ text: 'kode OTP 123456' })
+        expect(log).toHaveBeenCalledTimes(1)
+        expect(log.mock.calls[0]![1]).toContain('628111')
+        expect(log.mock.calls[0]![1]).not.toContain('123456')
+    })
+
+    it(`429 after ${NOTIFY_PER_MINUTE} sends in a minute, open again once the window slides`, async () => {
+        let t = 1_000_000
+        const notifier = okNotifier()
+        const call = await start(httpDeps({ now: () => t }), notifier)
+        for (let i = 0; i < NOTIFY_PER_MINUTE; i++) expect((await call({ text: `n${i}` })).status).toBe(200)
+        expect(await call({ text: 'satu lagi' })).toEqual({ status: 429, json: { error: 'rate_limited' } })
+        expect(notifier.send).toHaveBeenCalledTimes(NOTIFY_PER_MINUTE)
+        t += 60_001
+        expect((await call({ text: 'lagi' })).status).toBe(200)
+    })
+
+    it('invalid bodies do not use up the rate limit', async () => {
+        const call = await start(httpDeps(), okNotifier())
+        for (let i = 0; i < NOTIFY_PER_MINUTE + 5; i++) await call({ text: '' })
+        expect((await call({ text: 'halo' })).status).toBe(200)
+    })
+})
+
+describe('notify helpers', () => {
+    it('rateLimiter allows max per sliding minute', () => {
+        let t = 0
+        const rl = rateLimiter(2, () => t)
+        expect([rl.take(), rl.take(), rl.take()]).toEqual([true, true, false])
+        t = 30_000
+        expect(rl.take()).toBe(false)
+        t = 60_001
+        expect([rl.take(), rl.take(), rl.take()]).toEqual([true, true, false])
+    })
+
+    it('parseNotify returns trimmed text and the first owner', () => {
+        expect(parseNotify(testConfig(), HTTP, { text: ' hai ' })).toEqual({ text: 'hai', number: '628111' })
     })
 })

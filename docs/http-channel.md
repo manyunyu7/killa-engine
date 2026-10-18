@@ -14,7 +14,7 @@ Ghina (Next.js) ──HTTP──► killa-engine :8787 ──► dispatch ──
 - **Base URL:** `http://127.0.0.1:<HTTP_PORT>` (or `HTTP_BIND`).
 - **Auth:** every request, every path: `Authorization: Bearer <HTTP_TOKEN>`. Missing or wrong → `401 {"error":"unauthorized"}` before anything else is looked at (unknown paths included). Compared in constant time.
 - **Bodies:** JSON, max 1 MB — except `POST /v1/chat`, which allows ~33 MB so it can carry media. Responses are JSON, except `GET /v1/media` (the file itself).
-- **Errors:** `{"error": "<message>"}` with status `400` (bad input / path outside workspace), `403` (a `wa:` chatKey for a number that is not an owner), `404` (unknown path, file not found, or workspace dir missing), `405` (known path, wrong method), `413`, `415`, `502` (agent turn failed outright), `500` (internal; message hidden, logged server-side).
+- **Errors:** `{"error": "<message>"}` with status `400` (bad input / path outside workspace), `403` (a `wa:` chatKey for a number that is not an owner), `404` (unknown path, file not found, or workspace dir missing), `405` (known path, wrong method), `413`, `415`, `429` (`/v1/notify` rate limit), `502` (agent turn failed outright, or a WhatsApp send failed), `503` (`/v1/notify` while WhatsApp is not connected), `500` (internal; message hidden, logged server-side).
 - **`chatKey`:** 1–128 chars of `[A-Za-z0-9._:@-]`. Pick one per Ghina user (e.g. their user id). The engine maps it to a synthetic chat `http:<chatKey>`, so each key has its own Claude session, transcript and reminders, while all keys share one workspace — and therefore one memory. A digits-only key never collides with a WhatsApp chat or owner number.
 - **`wa:<number>` chatKey — the shared conversation.** A key of the form `wa:6281234567890` is *not* a separate HTTP chat: it is the owner's own WhatsApp DM. It is allowed only when `<number>` (digits only) is in the `OWNER_NUMBERS` of `HTTP_ACCOUNT`; anything else is `403 {"error":"chatKey wa: hanya untuk nomor owner"}` on every endpoint that takes a chatKey. The key maps to the same chat id the WhatsApp DM uses (`<number>@s.whatsapp.net#<number>`), so:
   - session, transcript (`/v1/chat/history`), `/model` choice and reminders are **one** conversation across WhatsApp and Ghina — a `/new` on either side resets both;
@@ -230,6 +230,29 @@ Stage everything and commit: `git add -A`, then `git commit -m <message>`.
 - Every git call is `spawn('git', [...args])` with an argument array; the message is one argv element and never reaches a shell. Hooks and signing follow the repo's own git config.
 - Commits are serialized per server: concurrent requests run one after another (the later one usually gets `clean: true`).
 
+### `POST /v1/notify`
+
+Push one plain WhatsApp message to the owner — for app alerts (an urgent email, a digest). This is **not** a chat: no session, transcript, queue, model choice or reminder is read or written, no agent turn runs, and nothing is mirrored. A reply from the owner is an ordinary DM, handled like any other.
+
+```json
+{ "text": "🔴 *Denda ETLE — Korlantas*\nbayar sebelum 25 Okt.", "to": "6281234567890" }
+```
+
+- `text` — required, trimmed, at most **4,000** characters after trimming. Sent as-is (WhatsApp markdown works), in one message.
+- `to` — optional. Defaults to the **first** `OWNER_NUMBERS` entry of `HTTP_ACCOUNT`; if given, it must be one of that account's owners (non-digits are stripped, so `+62 812…` is fine). Anything else → `400`.
+- Sent through `HTTP_ACCOUNT`'s WhatsApp socket to the owner's DM jid (`<number>@s.whatsapp.net`).
+- `200 {"sent": true, "id": "<WhatsApp message id>"}` (`id` omitted if the socket returned none).
+- `503 {"error": "wa_not_connected"}` when that account's socket is not open (reconnecting, logged out, not paired yet). Nothing is queued — retry later.
+- `502 {"error": "wa_send_failed"}` when the socket threw mid-send.
+- `429 {"error": "rate_limited"}` past **30 sends per sliding minute** (per process). Rejected bodies (`400`) don't count.
+- One log line per attempt: recipient number, length and message id — never the text.
+
+```bash
+curl -s -H "Authorization: Bearer $HTTP_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"text":"🔴 *Email penting*\nCek inbox Ghina."}' http://127.0.0.1:8787/v1/notify
+# {"sent":true,"id":"3EB0C4…"}
+```
+
 ## Mirror hook (WhatsApp → Ghina)
 
 So Ghina can show the WhatsApp side of a `wa:` conversation, the engine can POST a copy of every completed WhatsApp owner-DM turn to Ghina. Off unless `MIRROR_URL` is set (and then `MIRROR_TOKEN` is required — see [configuration.md](configuration.md#mirror-hook-optional)).
@@ -253,4 +276,5 @@ Content-Type: application/json
 - Bind stays on `127.0.0.1` unless you have a reason; if Ghina runs on another host, put a TLS reverse proxy in front rather than binding publicly.
 - The token is the whole boundary. Whoever holds it can make the agent — which runs with `--dangerously-skip-permissions` in the workspace — do anything the engine's OS user can. Keep it server-side in Ghina (never in client JS), and treat every Ghina user who can reach `/v1/chat` as someone you'd hand the workspace to. Point `HTTP_WORKSPACE` at a dedicated workspace if they shouldn't see your personal memory.
 - The WhatsApp owner check does not apply here; the token replaces it. A `wa:<number>` key is still limited to owner numbers, but anyone holding the token can read and write the owner's WhatsApp conversation through it (history, reminders, turns in the owner's workspace). Ghina must map a `wa:` key only to the owner's own Ghina account.
+- `/v1/notify` lets the token holder message the owner's WhatsApp — only the owner numbers of `HTTP_ACCOUNT`, never anyone else, at most 30 a minute. It is the one engine-initiated send besides reminders; keep the volume low (WhatsApp bans accounts for spammy outbound, even to a single number).
 - `/v1/media` serves only from the allowed roots, but everything inside them — the owner's workspace included — is readable by the token holder.

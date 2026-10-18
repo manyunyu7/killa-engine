@@ -46,7 +46,7 @@ Mitigations, in order of how much they actually help:
 
 A banned number is a dead agent. Inherited rules from a gateway that *did* get a predecessor banned:
 
-- **Reply-only.** No code path initiates a conversation. Scheduled/proactive features must use a different channel (Telegram, ntfy) — resist the temptation.
+- **Reply-only.** No code path initiates a conversation with anyone but an owner. The two exceptions are fenced to owner numbers: reminders the owner scheduled, and the HTTP channel's `POST /v1/notify` (token-only, owners of `HTTP_ACCOUNT` only, 30/min). Anything broader must use a different channel (Telegram, ntfy) — resist the temptation.
 - **Spare number.** If the worst happens, you lose a SIM's worth of identity, not your personal number.
 - One linked-device session per account dir; don't share the number with other tooling.
 

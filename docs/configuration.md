@@ -79,7 +79,7 @@ A local JSON API so an app on the same machine can talk to the same agent — sa
 | `HTTP_PORT` | — | Port to listen on. Unset = the HTTP channel is disabled. |
 | `HTTP_TOKEN` | — | Required when `HTTP_PORT` is set. Every request must send `Authorization: Bearer <token>`. Use a long random value (`openssl rand -hex 32`). |
 | `HTTP_BIND` | `127.0.0.1` | Address to bind. Keep it on loopback: anyone holding the token drives an agent running with `--dangerously-skip-permissions`. |
-| `HTTP_ACCOUNT` | first of `ACCOUNTS` | Account label HTTP chats are filed under (logs, reminders), and whose workspace they use by default. Must be one of `ACCOUNTS`. Its owner numbers are the only ones a `wa:<number>` chatKey may name — that key joins the owner's WhatsApp DM (shared session, transcript, model, reminders; see [http-channel.md](http-channel.md#conventions)). |
+| `HTTP_ACCOUNT` | first of `ACCOUNTS` | Account label HTTP chats are filed under (logs, reminders), and whose workspace they use by default. Must be one of `ACCOUNTS`. Its owner numbers are the only ones a `wa:<number>` chatKey may name — that key joins the owner's WhatsApp DM (shared session, transcript, model, reminders; see [http-channel.md](http-channel.md#conventions)). Its WhatsApp socket and first owner are also where `POST /v1/notify` sends. |
 | `HTTP_WORKSPACE` | the account's workspace | Workspace every HTTP chat runs in — a managed name or an absolute path. All HTTP users share it (and its memory); each `chatKey` gets its own session and transcript. |
 
 ## Mirror hook (optional)
